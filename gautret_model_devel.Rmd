@@ -7,6 +7,9 @@ output: html_notebook
 library(rstan)
 library(cmdstanr)
 library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot())
+
 options(mc.cores = parallel::detectCores())
 #rstan_options(auto_write = TRUE)
 
@@ -27,16 +30,19 @@ model <- cmdstan_model(stan_file = here::here("change_point.stan"))
 
 
 ```{r}
-prior <- list(sigma_prior_sd = 10,
+prior <- list(sigma_prior_sd = 5,
               initial_disease_prior_logmean = log(10),
               initial_disease_prior_logsd = log(2),
               
-              baseline_recovery_mean_prior_mean = 8;
-              baseline_recovery_mean_prior_shape = 2;
-              baseline_recovery_shape_prior_sd;
+              baseline_recovery_mean_prior_mean = 8,
+              baseline_recovery_mean_prior_shape = 2,
+              baseline_recovery_shape_prior_sd = 2,
+              
+              baseline_slopes_mean_prior_sd = 5,
+              baseline_slopes_sd_prior_sd = 5,
               
               t_high_prior_logmean = log(30),
-              t_high_prior_logsd = log(2))
+              t_high_prior_logsd = log(1.2))
               
 simulator <- function(N_patients, N_patients_binary, N_obs_per_patient, N_time, prior) {
   N_fails <- 0
@@ -49,6 +55,10 @@ simulator <- function(N_patients, N_patients_binary, N_obs_per_patient, N_time, 
 
     initial_disease <- rlnorm(N_patients, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
     
+    baseline_recovery_mean = rgamma(1, prior$baseline_recovery_mean_prior_shape, prior$baseline_recovery_mean_prior_shape / prior$baseline_recovery_mean_prior_mean);
+    baseline_recovery_shape = rlnorm(1, 0, prior$baseline_recovery_shape_prior_sd);
+    baseline_recovery = rgamma(N_patients, baseline_recovery_shape, baseline_recovery_shape / baseline_recovery_mean);
+
         
     N_obs <- N_patients * N_obs_per_patient
     observation_patients <- rep(1:N_patients, each = N_obs_per_patient)
@@ -59,33 +69,38 @@ simulator <- function(N_patients, N_patients_binary, N_obs_per_patient, N_time, 
       observation_times[observation_patients == p] <- sort(sample(first_time:(first_time + 2 * N_obs_per_patient - 1), N_obs_per_patient))
     }
     
-    slopes_sd <- abs(rnorm(1, 0, 1))
-    slopes <- rnorm(N_patients, 0, slopes_sd)
+    baseline_slopes_sd <- abs(rnorm(1, 0, prior$baseline_slopes_sd_prior_sd))
+    baseline_slopes_mean <- rnorm(1, 0, prior$baseline_slopes_mean_prior_sd)
+    baseline_slopes <- rnorm(N_patients, baseline_slopes_mean, baseline_slopes_sd)
     
     observation_noise <- rnorm(length(observation_patients), mean = 0, sd = sigma)
-    observation_true_value <- initial_disease[observation_patients] + slopes[observation_patients] * observation_times + observation_noise
+    observation_true_value <- initial_disease[observation_patients] + baseline_slopes[observation_patients] * log(1 + exp(observation_times - baseline_recovery[observation_patients]))   + observation_noise
     observation_type <- case_when(observation_true_value < 0 ~ -1,
-                                  observation_true_value > t_high ~ 1,
-                                  observation_patients <= N_patients_binary ~ 2,
+                                  observation_patients <= N_patients_binary ~ 1, #The POS case
+                                  observation_true_value > t_high ~ 2,
                                   TRUE ~ 0)
     observations <- observation_true_value
     observations[observation_type != 0] <- 0
   
     res <- list(
-      observed = unlist(recursive = FALSE, list(prior, list(
+      observed = c(prior, list(
         N_patients = N_patients,
         N_obs = N_obs,
         observation_patients = observation_patients,
         observation_time = observation_times,
         observation_type = observation_type,
+        baseline_recovery_mean = baseline_recovery_mean,
+        baseline_recovery_shape = baseline_recovery_shape,
         observations = observations
-      ))),
+      )),
       true = list(
         sigma = sigma,
         t_high = t_high,
-        slopes_sd = slopes_sd,
-        slopes = slopes,
-        initial_disease = initial_disease
+        initial_disease = initial_disease,
+        baseline_recovery = baseline_recovery,
+        baseline_slopes_mean = baseline_slopes_mean,
+        baseline_slopes_sd = baseline_slopes_sd,
+        baseline_slopes = baseline_slopes
       )
     )
     break
@@ -101,16 +116,56 @@ simulator <- function(N_patients, N_patients_binary, N_obs_per_patient, N_time, 
 }
 ```
 
+```{r}
+plot_sim_data_true <- function(data) {
+  true_dataset <- data.frame(patient = 1:data$observed$N_patients, initial = data$true$initial_disease, 
+                             recovery = data$true$baseline_recovery, slope = data$true$baseline_slopes) %>% 
+    crossing(time = seq(1, max(data$observed$observation_time) + 1, length.out = 50)) %>%
+    mutate(expression = initial + slope * log(1 + exp(time - recovery)))
+  
+  recovery_points <- true_dataset %>% group_by(patient) %>% 
+    top_n(wt = -abs(time - recovery), n = 1)
+  
+  true_dataset %>% ggplot(aes(x = time, y = expression, group = patient)) + geom_line() + 
+    geom_hline(color = "blue", linetype = "dashed", yintercept = 0) + geom_hline(color = "blue", linetype = "dashed", yintercept = data$true$t_high) + geom_point(color = "blue", size = 2, data = recovery_points)
+}
+
+plot_sim_data_observed <- function(data) {
+
+  observed_dataset <- data.frame(patient = data$observed$observation_patients, 
+                             expression = case_when(data$observed$observation_type <= 0 ~ data$observed$observations,
+                                                    data$observed$observation_type == 1 ~ mean(data$observed$observations),
+                                                    data$observed$observation_type == 2 ~ max(data$observed$observations)
+                             ),
+                             type = factor(data$observed$observation_type))  %>%
+    mutate(time = data$observed$observation_time + runif(n(), -0.2, 0.2)) %>%
+    arrange(time)
+  
+  observed_dataset %>% ggplot(aes(x = time, y = expression, group = patient, shape = type)) + geom_line() + geom_point()
+}
+
+```
+
+```{r}
+data <- simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 15, prior = prior)
+plot_sim_data_true(data)
+plot_sim_data_observed(data)
+
+```
+
 
 Single test
 
 ```{r}
-data <- simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 10, prior = prior)
+data <- simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 15, prior = prior)
 #fit <- sampling(model, data = data$observed)
 cmdstan_fit <- model$sample(data = data$observed, adapt_delta = 0.99)
 fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
 evaluation_summary(fit, data$true)
 data
+
+plot_sim_data_true(data)
+plot_sim_data_observed(data)
 
 ```
 

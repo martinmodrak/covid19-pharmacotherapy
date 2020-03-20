@@ -1,0 +1,23 @@
+---
+title: "Favipiravir computations"
+output: html_notebook
+---
+
+```{r setup}
+library(brms)
+```
+
+
+```{r}
+chest_improvement <- data.frame(N = c(35, 45), improved = c(32, 28), group = factor(c("FPV","LPV/RTV"), levels = c("LPV/RTV", "FPV")))
+
+fit <- brm(improved | trials(N) ~ group, family = "binomial", data = chest_improvement)
+summary(fit)
+```
+
+```{r}
+linpred <- posterior_linpred(fit)
+quantile( exp(linpred[,1]) / exp(linpred[,2]), probs =  c(0.025,0.975))
+```
+
+
