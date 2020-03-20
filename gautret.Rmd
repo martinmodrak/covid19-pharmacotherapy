@@ -1,0 +1,55 @@
+---
+title: "HCQ + Azithromycin"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(readxl)
+library(here)
+library(cowplot)
+theme_set(theme_cowplot())
+```
+
+```{r}
+gautret <- readxl::read_excel(here("Gautret_et_al.xlsx"), sheet = "Patients", na = "ND") %>% mutate(Group = if_else(Hydroxychloroquine == "No", "Control", if_else(Azithromycin == "No", "Hydroxychloroquine", "Hydroxychloroquine + Azithromycin")))
+
+gautret$Clinical_Status[gautret$Clinical_Status == "LTRI"] <- "LRTI"
+
+
+gautret_long <- gautret %>% pivot_longer(matches("D[0-6]"), names_to = "Day", values_to = "PCR", names_prefix = "D") %>% mutate(Day = as.integer(Day))
+PCR_Neg_Limit <- 35 #From paper
+PCR_Pos_Proxy <- 25 #Arbitrary
+```
+
+Most notably both HCQ and HCQ+AZ group started medication (and hence monitoring) at later time than the control group. This could partially account for the differences observed, nevertheless both HCQ and HCQ+AZ groups show an overall slow decline in viral expression that is not seen in the control group.
+
+```{r, fig.cap="The per patient data as reported by Gautret et al. Each line is a single patient, for the treatment groups, the line starts at first dose. Viral expression is computed as 35 - CT, so that 0 corresponds to the detection limit. The control group contains some patients where the PCR is reported only as positive/negative. For this figure, positive tests were imputed as 10."}
+
+my_pos = position_jitter(width = 0.2, height = 0)
+gautret_long %>% filter(Source != "Excluded") %>% 
+  mutate(Viral_Expression = PCR_Neg_Limit - case_when(PCR == "POS" ~ rnorm(n(), PCR_Pos_Proxy, 2),
+                                                PCR == "NEG" ~ PCR_Neg_Limit,
+                                                PCR == "ND" ~ NA_real_,
+                                                TRUE ~ as.double(PCR)),
+                        Expression_Exact = !(PCR %in% c("POS","NEG","ND") ),
+                        Days_From_Onset = if_else(Days_From_Onset %in% c("-","Unknown"), 0, as.double(Days_From_Onset))) %>%
+  filter(!is.na(Viral_Expression)) %>%
+  ggplot(aes(x = Day + Days_From_Onset, y = Viral_Expression, color = Clinical_Status, group = ID)) + 
+  geom_point(alpha = 0.8, position = my_pos) + geom_line(alpha = 0.5, position = my_pos) +
+  geom_hline(yintercept = 0, linetype = "dashed") + facet_wrap(~Group, ncol = 2) +
+  scale_x_continuous("Days from symptoms onset") + scale_y_continuous("Viral expression")
+```
+
+
+Also the original analysis excludes six patients who were lost to followup, four of which had severe outcome (one death, three transported to ICU). None of the patients int control group has been reported to have such an outcome.
+
+```{r}
+gautret %>% filter(Source == "Excluded") %>% select(ID, Clinical_Status, Hydroxychloroquine, Azithromycin, matches("D[0-6]"))
+```
+
+
+
+```{r}
+gautret %>% filter(Source != "Excluded") %>% ggplot(aes(Age)) + geom_histogram(binwidth = 10) + facet_wrap(~Group, ncol = 1)
+```

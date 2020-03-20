@@ -1,0 +1,147 @@
+---
+title: "Model development"
+output: html_notebook
+---
+
+```{r setup}
+library(rstan)
+library(cmdstanr)
+library(tidyverse)
+options(mc.cores = parallel::detectCores())
+#rstan_options(auto_write = TRUE)
+
+source("R/evaluation_tools.R")
+source("R/sbc.R")
+source("R/sampling_multi.R")
+```
+
+
+```{r}
+#system.time({
+model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+#})
+#system.time({
+#model <- rstan::stan_model(file = here::here("change_point.stan"))
+#})
+```
+
+
+```{r}
+prior <- list(sigma_prior_sd = 10,
+              initial_disease_prior_logmean = log(10),
+              initial_disease_prior_logsd = log(2),
+              
+              baseline_recovery_mean_prior_mean = 8;
+              baseline_recovery_mean_prior_shape = 2;
+              baseline_recovery_shape_prior_sd;
+              
+              t_high_prior_logmean = log(30),
+              t_high_prior_logsd = log(2))
+              
+simulator <- function(N_patients, N_patients_binary, N_obs_per_patient, N_time, prior) {
+  N_fails <- 0
+  repeat {
+
+    sigma <- abs(rnorm(1, 0, prior$sigma_prior_sd))
+    # t_high_raw <- rlnorm(1, prior$t_high_prior_logmean, prior$t_high_prior_logsd)
+    # t_high <- t_high_raw * mean(initial_disease)
+    t_high <- rlnorm(1, prior$t_high_prior_logmean, prior$t_high_prior_logsd)
+
+    initial_disease <- rlnorm(N_patients, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
+    
+        
+    N_obs <- N_patients * N_obs_per_patient
+    observation_patients <- rep(1:N_patients, each = N_obs_per_patient)
+    
+    observation_times <- integer(N_obs)
+    for(p in 1:N_patients) {
+      first_time <- rdunif(1, a = 1, b = N_time -  2 * N_obs_per_patient + 1)
+      observation_times[observation_patients == p] <- sort(sample(first_time:(first_time + 2 * N_obs_per_patient - 1), N_obs_per_patient))
+    }
+    
+    slopes_sd <- abs(rnorm(1, 0, 1))
+    slopes <- rnorm(N_patients, 0, slopes_sd)
+    
+    observation_noise <- rnorm(length(observation_patients), mean = 0, sd = sigma)
+    observation_true_value <- initial_disease[observation_patients] + slopes[observation_patients] * observation_times + observation_noise
+    observation_type <- case_when(observation_true_value < 0 ~ -1,
+                                  observation_true_value > t_high ~ 1,
+                                  observation_patients <= N_patients_binary ~ 2,
+                                  TRUE ~ 0)
+    observations <- observation_true_value
+    observations[observation_type != 0] <- 0
+  
+    res <- list(
+      observed = unlist(recursive = FALSE, list(prior, list(
+        N_patients = N_patients,
+        N_obs = N_obs,
+        observation_patients = observation_patients,
+        observation_time = observation_times,
+        observation_type = observation_type,
+        observations = observations
+      ))),
+      true = list(
+        sigma = sigma,
+        t_high = t_high,
+        slopes_sd = slopes_sd,
+        slopes = slopes,
+        initial_disease = initial_disease
+      )
+    )
+    break
+    # if(length(unique(observation_type))  >= if_else(N_patients_binary >= 1, 4, 3)) {
+    #   break;
+    # }
+    # N_fails <- N_fails + 1
+  }
+  if(N_fails > 0){
+    cat(N_fails, " fails\n")
+  }
+  res
+}
+```
+
+
+Single test
+
+```{r}
+data <- simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 10, prior = prior)
+#fit <- sampling(model, data = data$observed)
+cmdstan_fit <- model$sample(data = data$observed, adapt_delta = 0.99)
+fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+evaluation_summary(fit, data$true)
+data
+
+```
+
+SBC
+
+```{r}
+sbc_res <- sbc(model, generator = function() {simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 10, prior = prior)}, N_steps = 50, control = list(adapt_delta = 0.95))
+names(sbc_res$params)
+sbc_res$params %>% filter(!grepl("slope|initial", param_name)) %>% plot_sbc_params()
+sbc_res$params %>% filter(grepl("slope", param_name)) %>% plot_sbc_params()
+sbc_res$params %>% filter(grepl("initial", param_name)) %>% plot_sbc_params()
+#sbc_res$params %>% plot_sbc_params()
+summarise_sbc_diagnostics(sbc_res)
+#sbc_res$diagnostics
+```
+
+```{r}
+id <- 7
+fit <- sampling(model, data = sbc_res$data[[id]])
+evaluation_summary(fit, sbc_res$true_values[[id]])
+sbc_res$data[[id]]
+sbc_res$true_values[[id]]
+
+launch_shinystan_nonblocking(fit)
+
+```
+
+
+
+
+```{r}
+brms::make_stancode(x ~ 1, data = data.frame(x = rgamma(10, 3)), family = Gamma(link = "log"))
+```
+
