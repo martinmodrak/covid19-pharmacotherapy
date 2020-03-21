@@ -11,7 +11,7 @@ library(cowplot)
 theme_set(theme_cowplot())
 
 options(mc.cores = parallel::detectCores())
-#rstan_options(auto_write = TRUE)
+rstan_options(auto_write = TRUE)
 
 source("R/evaluation_tools.R")
 source("R/sbc.R")
@@ -21,10 +21,10 @@ source("R/sampling_multi.R")
 
 ```{r}
 #system.time({
-model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
 #})
 #system.time({
-#model <- rstan::stan_model(file = here::here("change_point.stan"))
+model <- rstan::stan_model(file = here::here("change_point.stan"))
 #})
 ```
 
@@ -158,9 +158,12 @@ Single test
 
 ```{r}
 data <- simulator(N_patients = 10, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 15, prior = prior)
-#fit <- sampling(model, data = data$observed)
-cmdstan_fit <- model$sample(data = data$observed, adapt_delta = 0.99)
-fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+if(inherits(model, "stanmodel")) {
+  fit <- sampling(model, data = data$observed)
+} else {
+  cmdstan_fit <- model$sample(data = data$observed, adapt_delta = 0.99)
+  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+}
 evaluation_summary(fit, data$true)
 data
 

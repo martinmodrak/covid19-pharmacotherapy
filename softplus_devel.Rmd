@@ -1,0 +1,114 @@
+---
+title: "Softplus devel"
+output: html_notebook
+---
+
+
+```{r setup}
+library(rstan)
+library(cmdstanr)
+library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot())
+
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+source("R/evaluation_tools.R")
+source("R/sbc.R")
+source("R/sampling_multi.R")
+```
+
+```{r}
+sp_model <- rstan::stan_model("softplus_test.stan")
+```
+
+```{r}
+sp_prior <- list(
+              initial_disease_prior_logmean = log(10),
+              initial_disease_prior_logsd = log(2),
+              
+              baseline_recovery_mean = 8,
+              baseline_recovery_shape = 2)
+              
+sp_simulator <- function(N, N_time, prior) {
+
+    sigma <- abs(rnorm(1, 0, 1))
+
+    #initial <- rlnorm(1, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
+    
+    recovery <-  rgamma(1, prior$baseline_recovery_shape, prior$baseline_recovery_shape / prior$baseline_recovery_mean);
+
+    times <- integer(N)
+    first_time <- rdunif(1, a = 1, b = N_time -  2 * N + 1)
+    times <- sort(sample(first_time:(first_time + 2 * N - 1), N))
+
+    last <- max(times)
+    
+    slope <- rnorm(1, 0, 1)
+    
+    lastval <- rlnorm(1, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
+    change_at_first_if_slope_1 <- rlnorm(1, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
+    helper = log(exp(change_at_first_if_slope_1) - 1)
+    recovery = first_time - helper
+    initial = lastval - slope * log(1 + exp(last - first_time + helper));
+    #slope = (lastval - initial) / log(1 + exp(last - first_time + helper))
+    
+    true_values <- initial + slope * log(1 + exp(times - recovery))
+    y <- true_values    + rnorm(N, 0, sd = sigma)
+
+    list(
+      observed = c(prior, list(
+        N = N,
+        y = y,
+        times = times
+      )),
+      true = list(
+        sigma = sigma,
+        initial = initial,
+        recovery = recovery,
+        lastval = lastval,
+        change_at_first_if_slope_1 = change_at_first_if_slope_1
+      )
+    )
+}
+```
+
+```{r}
+data <- sp_simulator(N = 4, N_time = 15, prior = sp_prior)
+if(inherits(sp_model, "stanmodel")) {
+  fit <- sampling(sp_model, data = data$observed)
+} else {
+  cmdstan_fit <- sp_model$sample(data = data$observed)
+  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+}
+evaluation_summary(fit, data$true)
+data
+
+
+```
+
+```{r}
+launch_shinystan_nonblocking(fit)
+```
+
+SBC
+
+```{r}
+sp_sbc_res <- sbc(sp_model, generator = function() {sp_simulator(N = 4, N_time = 15, prior = sp_prior)}, N_steps = 50)
+sp_sbc_res$params %>% plot_sbc_params()
+summarise_sbc_diagnostics(sp_sbc_res)
+#sbc_res$diagnostics
+```
+
+```{r}
+id <- 7
+fit <- sampling(model, data = sbc_res$data[[id]])
+evaluation_summary(fit, sbc_res$true_values[[id]])
+sbc_res$data[[id]]
+sbc_res$true_values[[id]]
+
+launch_shinystan_nonblocking(fit)
+
+```
+

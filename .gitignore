@@ -38,4 +38,5 @@ vignettes/*.pdf
 *.exe
 *.nb.html
 *.pdf
+*.rds
 ~*
