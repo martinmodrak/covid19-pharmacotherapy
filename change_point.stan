@@ -10,20 +10,14 @@ data {
   real<lower=0> sigma_prior_sd;
   real initial_disease_prior_logmean;
   real<lower=0> initial_disease_prior_logsd;
-  real<lower=0> baseline_recovery_mean_prior_mean;
-  real<lower=0> baseline_recovery_mean_prior_shape;
-  real<lower=0> baseline_recovery_shape_prior_sd;
   real t_high_prior_logmean;
   real<lower=0> t_high_prior_logsd;
-  real<lower=0> baseline_recovery_mean;
-  real<lower=0> baseline_recovery_shape;
   real<lower=0> baseline_slopes_mean_prior_sd;
   real<lower=0> baseline_slopes_sd_prior_sd;
 }
 
 parameters {
   vector[N_patients] initial_disease_raw;
-  vector<lower=0>[N_patients] baseline_recovery;
   real baseline_slopes_mean;
   real<lower=0> baseline_slopes_sd;
   vector[N_patients] baseline_slopes_raw;
@@ -44,10 +38,6 @@ model {
   sigma_raw ~ normal(0, 1);
   t_high ~ lognormal(t_high_prior_logmean, t_high_prior_logsd);
   
-  // baseline_recovery_mean ~ gamma(baseline_recovery_mean_prior_shape, baseline_recovery_mean_prior_shape / baseline_recovery_mean_prior_mean);
-  // baseline_recovery_shape ~ lognormal(0, baseline_recovery_shape_prior_sd);
-  baseline_recovery ~ gamma(baseline_recovery_shape, baseline_recovery_shape / baseline_recovery_mean);
-  
   //t_high_raw ~ normal(0, 1);
   baseline_slopes_sd ~ normal(0, baseline_slopes_sd_prior_sd);
   baseline_slopes_mean ~ normal(0, baseline_slopes_mean_prior_sd);
@@ -55,7 +45,7 @@ model {
   
   for(o in 1:N_obs) {
     int patient = observation_patients[o];
-    real mu = initial_disease[patient] + baseline_slopes[patient] * log1p_exp(observation_time[patient] - baseline_recovery[patient]);
+    real mu = initial_disease[patient] + baseline_slopes[patient] * observation_time[patient];
     if(observation_type[o] == 0) {
       target += normal_lpdf(observations[o] | mu, sigma);
     } else if (observation_type[o] == -1) {

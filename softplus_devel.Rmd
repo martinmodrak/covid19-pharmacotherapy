@@ -75,7 +75,7 @@ sp_simulator <- function(N, N_time, prior) {
 ```
 
 ```{r}
-data <- sp_simulator(N = 4, N_time = 15, prior = sp_prior)
+#data <- sp_simulator(N = 4, N_time = 15, prior = sp_prior)
 if(inherits(sp_model, "stanmodel")) {
   fit <- sampling(sp_model, data = data$observed)
 } else {

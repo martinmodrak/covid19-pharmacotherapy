@@ -55,6 +55,8 @@ gautret %>% filter(Source == "Excluded") %>% select(ID, Clinical_Status, Hydroxy
 ```
 
 
+https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fulltext Could maybe serve as an additional justification for the model.
+
 ```{r}
 model <- cmdstan_model(stan_file = here::here("change_point.stan"))
 
