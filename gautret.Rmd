@@ -3,6 +3,8 @@ title: "HCQ + Azithromycin"
 output: html_notebook
 ---
 
+First, big thanks to Prof. Raoult and his team who were able to very quickly and transparently report their data. Without their hard work and openness, this reanalysis would not be possible at all.
+
 ```{r setup}
 library(tidyverse)
 library(readxl)
@@ -36,7 +38,7 @@ gautret_long %>% filter(Source != "Excluded") %>%
                                                 PCR == "NEG" ~ PCR_Neg_Limit,
                                                 PCR == "ND" ~ NA_real_,
                                                 TRUE ~ as.double(PCR)),
-                        Expression_Exact = !(PCR %in% c("POS","NEG","ND") )),
+         Expression_Exact = !(PCR %in% c("POS","NEG","ND") ),
          Time = Day + Days_From_Onset_Imputed + runif(n(), - 0.2, 0.2)) %>%
   filter(!is.na(Viral_Expression)) %>%
   ggplot(aes(x = Time, y = Viral_Expression, color = Clinical_Status, group = ID)) + 
@@ -69,6 +71,8 @@ data_for_model <- c(prior, list(
         observation_patients = gautret_long$NumericID,
         observation_time = gautret_long$Day + gautret_long$Days_From_Onset_Imputed,
         observation_type = observation_type,
+        baseline_recovery_mean = 8,
+        baseline_recovery_shape = 1,
         observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0)
       ))
 
