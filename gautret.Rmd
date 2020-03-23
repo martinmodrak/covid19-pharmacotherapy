@@ -58,14 +58,15 @@ gautret %>% filter(Source == "Excluded") %>% select(ID, Clinical_Status, Hydroxy
 https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fulltext Could maybe serve as an additional justification for the model.
 
 ```{r}
-model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+model <- rstan::stan_model(file = here::here("change_point.stan"))
 
 observation_type <- case_when(gautret_long$PCR == "NEG" ~ -1,
                                      gautret_long$PCR == "POS" ~ 1,
-                                     gautret_long$PCR %in% c("ICU","DEATH", 1) ~ 2,
+                                     gautret_long$PCR %in% c("ICU","DEATH") ~ 2,
                                      TRUE ~ 0
                                      )
-gautret_long
+#gautret_long
 
 data_for_model <- c(prior, list(
         N_patients = nrow(gautret),
@@ -75,11 +76,36 @@ data_for_model <- c(prior, list(
         observation_type = observation_type,
         baseline_recovery_mean = 8,
         baseline_recovery_shape = 1,
+        max_time_for_predictions = max(gautret_long$Day + gautret_long$Days_From_Onset_Imputed) + 3,
         observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0)
       ))
 
-cmdstan_fit <- model$sample(data = data_for_model)
+if(inherits(model, "stanmodel")) {
+  fit <- sampling(model, data = data_for_model)
+} else {
+  cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
+  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+}
+fit
+
 ```
+
+```{r}
+plot_patients <- 
+```
+
+
+
+
+```{r}
+tt <- gautret_long %>% mutate(observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0), cens = case_when(PCR == "NEG" ~ "left",
+                                     gautret_long$PCR %in% c("POS","ICU","DEATH") ~ "interval",
+                                     TRUE ~ "none"
+                                     ),y2 = observations + 2,
+                              time = Day + Days_From_Onset_Imputed)
+brms::make_stancode( observations | cens(cens, y2) ~ 0 + (1 + time || ID), data = tt)
+```
+
 
 
 ```{r}
