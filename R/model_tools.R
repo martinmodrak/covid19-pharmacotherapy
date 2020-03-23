@@ -49,7 +49,7 @@ prepare_data_for_plotting <- function(data_for_model, data_wide, fit) {
       mu_clamped = clamp_expression(mu, t_high),
       y = rnorm(n(), mu, sigma),
       y_clamped = clamp_expression(y, t_high),
-      treated = treatment_slope >= 0)
+      treated = time >= Days_From_Onset_Imputed & Hydroxychloroquine == "Yes")
   
   list(
     observed_dataset = observed_dataset,
@@ -63,17 +63,17 @@ plot_fitted_patients <- function(prepared_data, patient_ids, type = "fitted") {
 
   fitted_draws <- sample(1:max(prepared_data$fitted_dataset$.draw), 50)
   
-  fitted_dataset <- prepared_data$fitted_dataset %>% filter(patient %in% patient_ids, .draw %in% fitted_draws) 
+  fitted_dataset <- prepared_data$fitted_dataset %>% filter(patient %in% patient_ids) 
   observed_dataset <- prepared_data$observed_dataset %>% filter(patient %in% patient_ids) 
   
   t_high_summary <- prepared_data$t_high_summary
   
   if(type == "fitted") {
-    model_geom1 <- geom_line(data = fitted_dataset, aes(x = time, y = mu_clamped, color = treated, group = .draw), alpha = 0.3, inherit.aes = FALSE)
+    model_geom1 <- geom_line(data = fitted_dataset %>% filter(.draw %in% fitted_draws), aes(x = time, y = mu_clamped, color = treated, group = .draw), alpha = 0.3, inherit.aes = FALSE)
     model_geom2 <- NULL
   } else if(type == "predicted") {
     predicted_dataset <- fitted_dataset %>%
-      group_by(patient, time) %>%
+      group_by(patient, patient_label, time) %>%
       summarise(low = quantile(y_clamped, probs = 0.025), low50 = quantile(y_clamped, probs = 0.25),
                 high50 = quantile(y_clamped, probs = 0.75), high = quantile(y_clamped, probs = 0.975))
     

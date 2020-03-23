@@ -92,19 +92,23 @@ if(inherits(model, "stanmodel")) {
   cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
 }
+
+prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
+
 ```
+
+
 
 ```{r}
 
 
-plot_fitted_patients(data_for_model, fit, 1:4)
-#plot_fitted_patients(data_for_model, fit, 1:4, type = "predicted")
-# plot_fitted_patients(data_for_model, fit, 10:14)
-# plot_fitted_patients(data_for_model, fit, 10:14, type = "predicted")
-# plot_fitted_patients(data_for_model, fit, 17:21)
-# plot_fitted_patients(data_for_model, fit, 17:21, type = "predicted")
-# plot_fitted_patients(data_for_model, fit, 31:34)
-# plot_fitted_patients(data_for_model, fit, 31:34, type = "predicted")
+step_size <- 9
+for(step in 1:(ceiling(nrow(gautret) / step_size))) {
+  ids <- ((step - 1) * step_size + 1) : (step* step_size)
+  plot_fitted_patients(prepared_data, ids) %>% print()
+  plot_fitted_patients(prepared_data, ids, type = "predicted") %>% print()
+  
+}
 ```
 
 ```{r}
