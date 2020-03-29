@@ -3,7 +3,15 @@ title: "HCQ + Azithromycin"
 output: html_notebook
 ---
 
+TODO:
+- Figure out SBC issues
+- All missed observations mean < t_high
+- Quadratic term?
+- Unobserved symptom start
+
 First, big thanks to Prof. Raoult and his team who were able to very quickly and transparently report their data. Without their hard work and openness, this reanalysis would not be possible at all.
+
+The paper has been also criticized for its methodology. We agree that many of those criticisms are valid, but will not discuss them here in depth. We believe the proposed modelling approach is able to make a good use of limited case series data and can thus be useful beyond analyzing this particular dataset. 
 
 ```{r setup}
 library(tidyverse)

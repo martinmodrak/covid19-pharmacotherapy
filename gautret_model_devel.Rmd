@@ -16,6 +16,7 @@ rstan_options(auto_write = TRUE)
 source("R/evaluation_tools.R")
 source("R/sbc.R")
 source("R/sampling_multi.R")
+source("R/gautret_model_devel_tools.R")
 ```
 
 
@@ -31,8 +32,10 @@ model <- rstan::stan_model(file = here::here("change_point.stan"))
 
 ```{r}
 prior <- list(sigma_prior_sd = 5,
-              initial_disease_prior_logmean = log(15),
-              initial_disease_prior_logsd = log(1.2),
+              # initial_disease_prior_logmean = log(15),
+              # initial_disease_prior_logsd = log(1.2),
+              initial_disease_prior_mean = 15,
+              initial_disease_prior_sd = 10,
               
               baseline_slopes_mean_prior_sd = 1,
               baseline_slopes_sd_prior_sd = 1,
@@ -40,136 +43,13 @@ prior <- list(sigma_prior_sd = 5,
               
               t_high_prior_logmean = log(30),
               t_high_prior_logsd = log(1.2))
-              
-simulator <- function(N_patients, N_patients_binary, N_treatments, N_obs_per_patient, N_time, prior) {
-  N_fails <- 0
-  repeat {
 
-    sigma <- abs(rnorm(1, 0, prior$sigma_prior_sd))
-    # t_high_raw <- rlnorm(1, prior$t_high_prior_logmean, prior$t_high_prior_logsd)
-    # t_high <- t_high_raw * mean(initial_disease)
-    t_high <- rlnorm(1, prior$t_high_prior_logmean, prior$t_high_prior_logsd)
 
-    initial_disease <- rlnorm(N_patients, prior$initial_disease_prior_logmean, prior$initial_disease_prior_logsd)
-    
-        
-    N_obs <- N_patients * N_obs_per_patient
-    observation_patients <- rep(1:N_patients, each = N_obs_per_patient)
-    
-    observation_times <- integer(N_obs)
-    treatment_start_times <- integer(N_patients)
-    for(p in 1:N_patients) {
-      first_time <- rdunif(1, a = 1, b = N_time -  2 * N_obs_per_patient + 1)
-      times <- sort(sample(first_time:(first_time + 2 * N_obs_per_patient - 1), N_obs_per_patient))
-      observation_times[observation_patients == p] <- times
-      
-      treatment_start_times[p] = rdunif(1, a = first_time, b = max(times) - 1)
-    }
-    
-    baseline_slopes_sd <- abs(rnorm(1, 0, prior$baseline_slopes_sd_prior_sd))
-    baseline_slopes_mean <- rnorm(1, 0, prior$baseline_slopes_mean_prior_sd)
-    baseline_slopes <- rnorm(N_patients, baseline_slopes_mean, baseline_slopes_sd)
-    
-    treatment_slopes <- rnorm(N_treatments, 0, prior$treatment_slopes_prior_sd)
-    treatment_design_matrix <- matrix(0, nrow = N_obs, ncol = N_treatments)
-    patients_per_treatment <- round(N_patients / (N_treatments + 1))
-    patients_no_treatment <- N_patients - patients_per_treatment * N_treatments
-    treatment_per_patient <- integer(N_patients)
-    treatment_per_patient[1:patients_no_treatment] <- 0
-    for(t in 1:N_treatments) {
-      start <- (patients_no_treatment + (t - 1) * patients_per_treatment) + 1
-      patients_for_treatment <- start:(start + patients_per_treatment - 1)
-      treatment_per_patient[patients_for_treatment] <- t
-      observation_indices <- observation_patients %in% patients_for_treatment
-      treatment_design_matrix[observation_indices, t] <- 
-        observation_times[observation_indices] - treatment_start_times[observation_patients[observation_indices]]
-    }
-    
-    observation_noise <- rnorm(length(observation_patients), mean = 0, sd = sigma)
-    observation_true_value <- initial_disease[observation_patients] + baseline_slopes[observation_patients] * observation_times + 
-      as.numeric(treatment_design_matrix %*% treatment_slopes) +
-      observation_noise
-    observation_type <- case_when(observation_true_value < 0 ~ -1,
-                                  observation_true_value > t_high ~ 2,
-                                  observation_patients <= N_patients_binary ~ 1, #The POS case
-                                  TRUE ~ 0)
-    #observation_type = rep(0, length.out = N_obs)
-    observations <- observation_true_value
-    observations[observation_type != 0] <- 0
-  
-    res <- list(
-      observed = c(prior, list(
-        N_patients = N_patients,
-        N_obs = N_obs,
-        N_treatments = N_treatments,
-        observation_patients = observation_patients,
-        observation_time = observation_times,
-        observation_type = observation_type,
-        observations = observations,
-        treatment_design_matrix = treatment_design_matrix,
-        treatment_start_times = treatment_start_times,
-        treatment_per_patient = treatment_per_patient
-      )),
-      true = list(
-        sigma = sigma,
-        t_high = t_high,
-        initial_disease = initial_disease,
-        baseline_slopes_sd = baseline_slopes_sd,
-        baseline_slopes_mean = baseline_slopes_mean,
-        baseline_slopes = baseline_slopes,
-        treatment_slopes = treatment_slopes
-      )
-    )
-    if(sum(observation_type == 0) >= 3) {
-      break;
-    }
-    N_fails <- N_fails + 1
-  }
-  if(N_fails > 0){
-    cat(N_fails, " fails\n")
-  }
-  res
-}
-data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 1, N_obs_per_patient = 3, N_time = 15, prior = prior)
+# data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 1, N_obs_per_patient = 3, N_time = 15, prior = prior)
 
 
 ```
 
-```{r}
-plot_sim_data_true <- function(data) {
-  patient_data <- data.frame(patient = 1:data$observed$N_patients, initial = data$true$initial_disease, 
-                             treatment_start_time = data$observed$treatment_start_times,
-                             treatment = data$observed$treatment_per_patient,
-                              slope = data$true$baseline_slopes) 
-  true_dataset <- patient_data %>% 
-    crossing(time = seq(1, max(data$observed$observation_time) + 1, length.out = 50)) %>%
-    mutate(
-      treated = treatment > 0 & time > treatment_start_time,
-      expression = initial + slope * time + 
-             if_else(treated, 
-                     (time - treatment_start_time) * data$true$treatment_slopes[treatment], 0),
-      treated_group = factor(treated * treatment, levels = 0:data$observed$N_treatments, labels = c("No", paste0("t_",1:data$observed$N_treatments))))
-  
-
-  true_dataset %>% ggplot(aes(x = time, y = expression, group = patient, color = treated_group)) + geom_line() + 
-    geom_hline(color = "blue", linetype = "dashed", yintercept = 0) + geom_hline(color = "blue", linetype = "dashed", yintercept = data$true$t_high) 
-}
-
-plot_sim_data_observed <- function(data) {
-
-  observed_dataset <- data.frame(patient = data$observed$observation_patients, 
-                             expression = case_when(data$observed$observation_type <= 0 ~ data$observed$observations,
-                                                    data$observed$observation_type == 1 ~ mean(data$observed$observations),
-                                                    data$observed$observation_type == 2 ~ max(data$observed$observations) + 2
-                             ),
-                             type = factor(data$observed$observation_type))  %>%
-    mutate(time = data$observed$observation_time + runif(n(), -0.2, 0.2)) %>%
-    arrange(time)
-  
-  observed_dataset %>% ggplot(aes(x = time, y = expression, group = patient, shape = type)) + geom_line() + geom_point()
-}
-
-```
 
 ```{r}
 data <- simulator(N_patients = 10, N_treatments = 1, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 15, prior = prior)
@@ -182,8 +62,8 @@ plot_sim_data_observed(data)
 Single test
 
 ```{r}
-adapt_delta <- 0.9
-data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 1, N_obs_per_patient = 3, N_time = 15, prior = prior)
+adapt_delta <- 0.8
+data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 0, N_obs_per_patient = 3, N_time = 15, prior = prior)
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
 } else {
@@ -202,18 +82,21 @@ data$true
 SBC
 
 ```{r}
-sbc_res <- sbc(model, generator = function() {simulator(N_patients = 15, N_treatments = 2, N_patients_binary = 0, N_obs_per_patient = 3, N_time = 10, prior = prior)}, N_steps = 50, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {simulator(N_patients = 15, N_treatments = 1, N_patients_binary = 0, N_obs_per_patient = 3, N_time = 10, prior = prior)}, N_steps = 100, control = list(adapt_delta = adapt_delta))
 names(sbc_res$params)
 sbc_res$params %>% filter(!grepl("slope|initial", param_name)) %>% plot_sbc_params()
 sbc_res$params %>% filter(grepl("slope", param_name)) %>% plot_sbc_params()
-sbc_res$params %>% filter(grepl("initial", param_name)) %>% plot_sbc_params()
+#sbc_res$params %>% filter(grepl("initial", param_name)) %>% plot_sbc_params()
+
 #sbc_res$params %>% plot_sbc_params()
 summarise_sbc_diagnostics(sbc_res)
 sbc_res$diagnostics
 ```
 
+mala sigma - problem initial disease raw, reparametrizovat na prvni mereny bod + Jacobian (prior je na initial)
+
 ```{r}
-id <- 23
+id <- 3
 data <- list(observed = sbc_res$data[[id]], true = sbc_res$true_values[[id]])
 fit <- sampling(model, data = data$observed)
 evaluation_summary(fit, sbc_res$true_values[[id]])
@@ -221,7 +104,7 @@ plot_sim_data_true(data)
 plot_sim_data_observed(data)
 data$true
 
-#launch_shinystan_nonblocking(fit)
+launch_shinystan_nonblocking(fit)
 
 
 #sbc_res$true_values[[i]]
