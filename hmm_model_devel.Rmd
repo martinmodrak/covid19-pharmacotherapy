@@ -23,48 +23,26 @@ source("R/hmm_model_devel_tools.R")
 
 ```{r}
 #system.time({
-model <- cmdstan_model(stan_file = here::here("hmm_pcr.stan"))
+#model <- cmdstan_model(stan_file = here::here("hmm_pcr.stan"))
 #})
 #system.time({
-#model <- rstan::stan_model(file = here::here("hmm_pcr.stan"))
+model <- rstan::stan_model(file = here::here("hmm_pcr.stan"))
 #})
 ```
 
 
 ```{r}
-prior <- list(sigma_prior_sd = 5,
-              # initial_disease_prior_logmean = log(15),
-              # initial_disease_prior_logsd = log(1.2),
-              initial_disease_prior_mean = 15,
-              initial_disease_prior_sd = 10,
-              
-              baseline_slopes_mean_prior_sd = 1,
-              baseline_slopes_sd_prior_sd = 1,
-              treatment_slopes_prior_sd = 2, 
-              
-              t_high_prior_logmean = log(30),
-              t_high_prior_logsd = log(1.2))
-
-
-# data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 1, N_obs_per_patient = 3, N_time = 15, prior = prior)
-
 
 ```
 
-
-```{r}
-data <- simulator(N_patients = 10, N_treatments = 1, N_patients_binary = 2, N_obs_per_patient = 3, N_time = 15, prior = prior)
-plot_sim_data_true(data)
-plot_sim_data_observed(data)
-
-```
 
 
 Single test
 
 ```{r}
 adapt_delta <- 0.8
-data <- simulator(N_patients = 10, N_patients_binary = 1, N_treatments = 0, N_obs_per_patient = 3, N_time = 15, prior = prior)
+data <- simulator(N_patients = 5, N_time = 5, prior = prior)
+data
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
 } else {
@@ -73,8 +51,8 @@ if(inherits(model, "stanmodel")) {
 }
 evaluation_summary(fit, data$true)
 
-plot_sim_data_true(data)
-plot_sim_data_observed(data)
+# plot_sim_data_true(data)
+# plot_sim_data_observed(data)
 
 data$true
 
@@ -83,13 +61,9 @@ data$true
 SBC
 
 ```{r}
-sbc_res <- sbc(model, generator = function() {simulator(N_patients = 15, N_treatments = 1, N_patients_binary = 0, N_obs_per_patient = 3, N_time = 10, prior = prior)}, N_steps = 100, control = list(adapt_delta = adapt_delta))
-names(sbc_res$params)
-sbc_res$params %>% filter(!grepl("slope|initial", param_name)) %>% plot_sbc_params()
-sbc_res$params %>% filter(grepl("slope", param_name)) %>% plot_sbc_params()
-#sbc_res$params %>% filter(grepl("initial", param_name)) %>% plot_sbc_params()
+sbc_res <- sbc(model, generator = function() {simulator(N_patients = 5, N_time = 8, prior = prior)}, N_steps = 200, control = list(adapt_delta = adapt_delta))
 
-#sbc_res$params %>% plot_sbc_params()
+sbc_res$params %>% plot_sbc_params()
 summarise_sbc_diagnostics(sbc_res)
 sbc_res$diagnostics
 ```
@@ -97,15 +71,18 @@ sbc_res$diagnostics
 mala sigma - problem initial disease raw, reparametrizovat na prvni mereny bod + Jacobian (prior je na initial)
 
 ```{r}
-id <- 3
+id <- 49
 data <- list(observed = sbc_res$data[[id]], true = sbc_res$true_values[[id]])
-fit <- sampling(model, data = data$observed)
+if(inherits(model, "stanmodel")) {
+  fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
+} else {
+  cmdstan_fit <- model$sample(data = data$observed, adapt_delta = adapt_delta)
+  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+}
 evaluation_summary(fit, sbc_res$true_values[[id]])
-plot_sim_data_true(data)
-plot_sim_data_observed(data)
-data$true
+data
 
-launch_shinystan_nonblocking(fit)
+#launch_shinystan_nonblocking(fit)
 
 
 #sbc_res$true_values[[i]]
@@ -119,20 +96,3 @@ bayesplot::mcmc_parcoord(fit, pars = c("sigma","baseline_slopes_mean","baseline_
 
 bayesplot::mcmc_parcoord(fit, pars = c("sigma","baseline_slopes_mean","baseline_slopes_sd","t_high"), np = bayesplot::nuts_params(fit))
 ```
-
-```{r}
-data_brms <- data.frame(patient = data$observed$observation_patients, y = data$observed$observations,
-                        time = data$observed$observation_time)
-fit_brms <- brms::brm(y ~ 1 + time + (1 + time || patient), data = data_brms)
-```
-```{r}
-summary(fit_brms)
-data$true
-```
-
-
-
-```{r}
-brms::make_stancode(x ~ 1, data = data.frame(x = rgamma(10, 3)), family = Gamma(link = "log"))
-```
-

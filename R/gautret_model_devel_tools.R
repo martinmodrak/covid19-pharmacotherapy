@@ -69,7 +69,7 @@ simulator <- function(N_patients, N_patients_binary, N_treatments, N_obs_per_pat
     
     
     observation_type <- case_when(observation_true_value < 0 ~ -1,
-                                  #observation_true_value > t_high ~ 2,
+                                  observation_true_value > t_high ~ 2,
                                   observation_patients <= N_patients_binary ~ 1, #The POS case
                                   TRUE ~ 0)
     # observation_type = rep(0, length.out = N_obs)
