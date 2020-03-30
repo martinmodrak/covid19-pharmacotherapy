@@ -1,8 +1,20 @@
 data {
-  int<lower=0> N_time;
-  vector[N_time] viral_load;
+  int<lower=0> N_obs;
+  int times[N_obs];
+  vector[N_obs] viral_load;
   real initial_viral_load_mu;
   real initial_viral_load_sd;
+}
+
+transformed data {
+  int step_size[N_obs];
+  step_size[1] = times[1];
+  for(n in 2:N_obs){
+    if(times[n] <= times[n - 1]) {
+      reject("Time must increase");
+    }
+    step_size[n] = times[n] - times[n - 1];
+  }
 }
 
 parameters {
@@ -19,9 +31,9 @@ transformed parameters {
 
 model {
 
-  vector[N_time] viral_load_centered;
-  for(t in 1:N_time) {
-    viral_load_centered[t] = viral_load[t] - (t - 1) * linpred;
+  vector[N_obs] viral_load_centered;
+  for(t in 1:N_obs) {
+    viral_load_centered[t] = viral_load[t] - (times[t] - 1) * linpred;
   }
   
   {
@@ -32,19 +44,20 @@ model {
     
     real m = initial_viral_load_mu;
     real C = initial_viral_load_sd ^ 2;
-    for(t in 1:N_time) {
+    for(n in 1:N_obs) {
       real Q;
       real Q_inv;
       real e;
       real A;
-      C += process_variance;
+      C += process_variance * step_size[n];
       //f = m;
       Q = C + obs_variance;
       Q_inv = inv(Q);
-      e = viral_load_centered[t] - m;
       A = C * Q_inv;
+      //C -= Q * A * A;
+      C *= 1 - A;
+      e = viral_load_centered[n] - m;
       m += A*e;
-      C -= Q * A * A;
       target += -0.5 * (log(Q) + e * e * Q_inv);
     }
   }

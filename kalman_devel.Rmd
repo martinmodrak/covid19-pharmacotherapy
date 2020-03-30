@@ -34,7 +34,7 @@ model <- cmdstan_model(stan_file = here::here("kalman_test.stan"))
 Single test
 
 ```{r}
-adapt_delta <- 0.8
+adapt_delta <- 0.95
 data <- simulator_kalman(N_time = 10)
 data
 if(inherits(model, "stanmodel")) {
@@ -55,16 +55,16 @@ data$true
 SBC
 
 ```{r}
-sbc_res <- sbc(model, generator = function() {simulator(N_patients = 5, N_time = 10, N_obs_per_patient = 4, prior = prior)}, N_steps = 500, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {simulator_kalman(N_time = 10) }, N_steps = 500, control = list(adapt_delta = adapt_delta))
 
-sbc_res$params %>% plot_sbc_params(binwidth = 5)
+sbc_res$params %>% plot_sbc_params(binwidth = 10)
 summarise_sbc_diagnostics(sbc_res)
 sbc_res$diagnostics
 ```
 
 
 ```{r}
-id <- 49
+id <- 6
 data <- list(observed = sbc_res$data[[id]], true = sbc_res$true_values[[id]])
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
@@ -75,7 +75,7 @@ if(inherits(model, "stanmodel")) {
 evaluation_summary(fit, sbc_res$true_values[[id]])
 data
 
-#launch_shinystan_nonblocking(fit)
+launch_shinystan_nonblocking(fit)
 
 
 #sbc_res$true_values[[i]]

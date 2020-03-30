@@ -19,13 +19,20 @@ simulator_kalman <- function(N_time) {
     viral_load[t] <- rnorm(1, state, sigma)
   }
   
+  #observed = rbinom(N_time, size = 1, p = 0.4)
+  observed = rep(1,N_time)
+  times = which(observed == 1);
+  viral_load <- viral_load[observed == 1];
+  N_obs = sum(observed);
+  
   list(true = list(
     linpred = linpred,
     total_noise = total_noise,
     process_noise_frac = process_noise_frac
   ), observed = list(
-    N_time = N_time,
+    N_obs = N_obs,
     viral_load = viral_load,
+    times = times,
     initial_viral_load_mu = initial_viral_load_mu,
     initial_viral_load_sd = initial_viral_load_sd
   ))
