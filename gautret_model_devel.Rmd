@@ -22,10 +22,10 @@ source("R/gautret_model_devel_tools.R")
 
 ```{r}
 #system.time({
-#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+model <- cmdstan_model(stan_file = here::here("change_point.stan"))
 #})
 #system.time({
-model <- rstan::stan_model(file = here::here("change_point.stan"))
+#model <- rstan::stan_model(file = here::here("change_point.stan"))
 #})
 ```
 

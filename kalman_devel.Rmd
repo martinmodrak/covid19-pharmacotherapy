@@ -16,32 +16,26 @@ rstan_options(auto_write = TRUE)
 source("R/evaluation_tools.R")
 source("R/sbc.R")
 source("R/sampling_multi.R")
-source("R/hmm_model_devel_tools.R")
+source("R/kalman_devel_tools.R")
 
 ```
 
 
 ```{r}
 #system.time({
-model <- cmdstan_model(stan_file = here::here("hmm_pcr.stan"))
+model <- cmdstan_model(stan_file = here::here("kalman_test.stan"))
 #})
 #system.time({
-#model <- rstan::stan_model(file = here::here("hmm_pcr.stan"))
+#model <- rstan::stan_model(file = here::here("kalman_test.stan"))
 #})
 ```
-
-
-```{r}
-
-```
-
 
 
 Single test
 
 ```{r}
 adapt_delta <- 0.8
-data <- simulator(N_patients = 5, N_time = 10, N_obs_per_patient = 4, prior = prior)
+data <- simulator_kalman(N_time = 10)
 data
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))

@@ -1,8 +1,15 @@
 prior <- list(
-  observation_model_prior = array(c(10,2,2,10), c(2,2))
+  observation_model_prior = array(c(10,2,2,10), c(2,2)),
+  state_intercept_prior_sd = 2,
+  viral_load_intercept_prior_sd = 5,
+  viral_load_intercept_prior_mean = 20,
+  viral_load_sigma_prior_sd = 5,
+  
+  fixed_prior_sd = 1,
+  time_effect_prior_sd = 0.5
 )
 
-simulator <- function(N_patients, N_obs_per_patient, N_time, prior) {
+simulator <- function(N_patients, N_treatments, N_obs_per_patient, N_time, prior) {
   N_obs_types <- 2
   o_neg <-  1
   o_pos <-  2
@@ -31,21 +38,48 @@ simulator <- function(N_patients, N_obs_per_patient, N_time, prior) {
   treatment_start_times <- integer(N_patients)
   for(p in 1:N_patients) {
     first_time <- rdunif(1, a = 1, b = N_time -  2 * N_obs_per_patient + 1)
-    #first_time <- 1
     patient_times <- sort(sample(first_time:(first_time + 2 * N_obs_per_patient - 1), N_obs_per_patient))
     times[patients == p] <- patient_times
     
     treatment_start_times[p] = rdunif(1, a = first_time, b = max(times) - 1)
   }
   
+  patients_per_treatment <- round(N_patients / (N_treatments + 1))
+  patients_no_treatment <- N_patients - patients_per_treatment * N_treatments
+  if(N_treatments > 0) {
+    N_fixed <- N_treatments
+    X <- array(0, c(N_obs, N_fixed))
+
+    fixed_prior_sd <- array(c(prior$intercept_sd), N_fixed)
+    
+    treatment_per_patient <- integer(N_patients)
+    treatment_per_patient[1:patients_no_treatment] <- 0
+    for(t in 1:N_treatments) {
+      start <- (patients_no_treatment + (t - 1) * patients_per_treatment) + 1
+      patients_for_treatment <- start:(start + patients_per_treatment - 1)
+      treatment_per_patient[patients_for_treatment] <- t
+      observation_indices <- patients %in% patients_for_treatment
+      X[observation_indices, t] <- 
+        observation_times[observation_indices] - treatment_start_times[observation_patients[observation_indices]]
+    }
+  } else {
+    ## All zeroes
+    treatment_per_patient <- integer(N_patients)
+  }
   
-  observations <- array(0L, c(N_patients, N_time))
+  beta <- rnorm(N_fixed, 0, sd = fixed_prior_sd)
+  time_effect <- rnorm(1, 0, sd = prior$time_effect_prior_sd)
+  time_effect_shift <- -N_time / 2
+  
+  o_types_full <- array(0L, c(N_patients, N_time))
 
   for(p in 1:N_patients) {  
     state <- s_ill
     for(t in 1:N_time) {
-      observations[p, t] <- sample(1:N_obs_types, size = 1, prob = observation_model[state,])
+      o_types_full[p, t] <- sample(1:N_obs_types, size = 1, prob = observation_model[state,])
       if(state == s_ill) {
+        linpred <- sum(X[p,] * beta) + time_effect * (t + time_effect_shift)
+        p_ill_to_healthy <- 1 / (1 + exp(-linpred))
         if(runif(1) < p_ill_to_healthy) {
           state <- s_healthy
         }
@@ -55,7 +89,7 @@ simulator <- function(N_patients, N_obs_per_patient, N_time, prior) {
   
   o_types = array(NA_integer_, N_obs)
   for(n in 1:N_obs) {
-    o_types[n] = observations[patients[n], times[n]]
+    o_types[n] = o_types_full[patients[n], times[n]]
   }
   
   list(
@@ -64,10 +98,15 @@ simulator <- function(N_patients, N_obs_per_patient, N_time, prior) {
       N_obs = N_obs,
       patients = patients,
       times = times,
-      o_types = o_types
+      o_types = o_types,
+      N_fixed = N_fixed,
+      X = X,
+      fixed_prior_sd = fixed_prior_sd,
+      time_effect_shift = time_effect_shift
     )),
     true = list(
-      p_ill_to_healthy = p_ill_to_healthy,
+      beta = beta,
+      time_effect = time_effect,
       sensitivity = sensitivity,
       specificity = specificity
       #observation_model = observation_model
