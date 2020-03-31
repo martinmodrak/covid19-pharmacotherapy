@@ -37,10 +37,6 @@ model {
   }
   
   {
-    //Code based on the implementation in
-    // https://github.com/stan-dev/math/blob/develop/stan/math/prim/prob/gaussian_dlm_obs_lpdf.hpp
-    // Using the same notation, simplifed because both design matrix (F) and transition matrix (G) are
-    // identity
     
     real m = initial_viral_load_mu;
     real C = initial_viral_load_sd ^ 2;
