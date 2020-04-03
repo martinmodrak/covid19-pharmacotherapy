@@ -62,6 +62,7 @@ data {
   
   
   vector<lower=0>[N_fixed] fixed_prior_sd;
+  real state_intercept_prior_mean;
   real<lower=0> state_intercept_prior_sd;
   real<lower=0> viral_load_intercept_prior_sd;
 
@@ -193,7 +194,7 @@ model {
   }
 
   beta ~ normal(0, fixed_prior_sd);
-  state_intercept ~ normal(0, state_intercept_prior_sd);
+  state_intercept ~ normal(state_intercept_prior_mean, state_intercept_prior_sd);
   viral_load_intercept ~ normal(0, viral_load_intercept_prior_sd);
   kalman_total_noise ~ inv_gamma(kalman_total_noise_prior_alpha, kalman_total_noise_prior_beta);
   

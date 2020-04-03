@@ -1,6 +1,9 @@
 prior <- list(
   observation_model_prior = array(c(10,2,2,10), c(2,2)),
-  state_intercept_prior_sd = 2,
+  
+  p_healthy_prior_q025 = 0.01,
+  p_healthy_prior_q975 = 0.5,
+  
   viral_load_intercept_prior_sd = 5,
   viral_load_intercept_prior_mean = 0,
   viral_load_sigma_prior_sd = 5,
@@ -14,7 +17,37 @@ prior <- list(
   time_effect_prior_sd = 0.5
 )
 
-simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, N_time, prior) {
+calculate_derived_prior_values <- function(prior) {
+  normal_logit_match_error <- function(p, q025, q975) {
+    mu <- p[1]
+    sd <- p[2]
+    (pnorm(gtools::logit(q025), mu, sd) - 0.025)^2 + (pnorm(gtools::logit(q975), mu, sd) - 0.975)^2
+  }
+  
+  opt_res <- nlm(normal_logit_match_error, p = c(0,1), 
+                 q025 = prior$p_healthy_prior_q025, q975 = prior$p_healthy_prior_q975)
+  prior$state_intercept_prior_mean = opt_res$estimate[1]
+  prior$state_intercept_prior_sd = opt_res$estimate[2]
+  
+  inv_gamma_match_error <- function(p, q025, q975) {
+    alpha <- p[1]
+    beta <- p[2]
+    inv_gamma_cdf <- function(x, alpha, beta) { pgamma(beta / x, alpha, lower = FALSE) }
+    (inv_gamma_cdf(q025, alpha, beta) - 0.025)^2 + (inv_gamma_cdf(q975, alpha, beta) - 0.975)^2
+  }
+  
+  opt_res <- nlm(inv_gamma_match_error, p = c(1,1), q025 = prior$kalman_total_noise_prior_q025, 
+                 q975 = prior$kalman_total_noise_prior_q025 )
+  prior$kalman_total_noise_prior_alpha = opt_res$estimate[1]
+  prior$kalman_total_noise_prior_beta = opt_res$estimate[2]
+  
+  prior
+}
+
+simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, N_time, prior, 
+                      time_effect = FALSE) {
+  prior <- calculate_derived_prior_values(prior)
+  
   # Setup the HMM part
   N_obs_types <- 2
   o_neg <-  1
@@ -34,22 +67,12 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
   observation_model[s_healthy, o_pos] <- 1 - specificity
   observation_model[s_ill, o_neg] <- 1 - sensitivity
   observation_model[s_ill, o_pos] <- sensitivity
-  
-  state_intercept <- rnorm(1, 0, prior$state_intercept_prior_sd)
+
+  state_intercept <- rnorm(1, prior$state_intercept_prior_mean, prior$state_intercept_prior_sd)
   
   # Setup the Kalman part
-  inv_gamma_match_error <- function(p, q025, q975) {
-    alpha <- p[1]
-    beta <- p[2]
-    inv_gamma_cdf <- function(x, alpha, beta) { pgamma(beta / x, alpha, lower = FALSE) }
-    (inv_gamma_cdf(q025, alpha, beta) - 0.025)^2 + (inv_gamma_cdf(q975, alpha, beta) - 0.975)^2
-  }
   
-  opt_res <- nlm(inv_gamma_match_error, p = c(1,1), q025 = 0.5, q975 = 10)
-  kalman_total_noise_prior_alpha = opt_res$estimate[1]
-  kalman_total_noise_prior_beta = opt_res$estimate[2]
-  
-  total_noise <- 1 / rgamma(1, shape = kalman_total_noise_prior_alpha, rate = kalman_total_noise_prior_beta)
+  total_noise <- 1 / rgamma(1, shape = prior$kalman_total_noise_prior_alpha, rate = prior$kalman_total_noise_prior_beta)
 
   process_noise_frac <- runif(1)
   process_noise_sd = sqrt( (total_noise ^ 2) * process_noise_frac);
@@ -76,19 +99,28 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
   patients_per_treatment <- round(N_patients / (N_treatments + 1))
   patients_no_treatment <- N_patients - patients_per_treatment * N_treatments
   
-  N_fixed <- N_treatments + 1
-  X <- array(0, c(N_patients, N_time, N_fixed))
   
-  fixed_prior_sd <- array(
-    c(prior$time_effect_prior_sd, array(c(prior$fixed_prior_sd_all), N_treatments)),
-    N_fixed)
 
   #Put time effect into X
-  time_effect_shift <- -N_time / 2
-  for(p in 1:N_patients) {
-    X[p,,1] <- 1:N_time + time_effect_shift
+  if(time_effect) {
+    N_fixed <- N_treatments + 1
+    fixed_prior_sd <- array(
+      c(array(c(prior$fixed_prior_sd_all), N_treatments), prior$time_effect_prior_sd),
+      N_fixed)
+  } else {
+    N_fixed <- N_treatments
+    fixed_prior_sd <- array(c(prior$fixed_prior_sd_all), N_treatments)
   }
-  
+
+  X <- array(0, c(N_patients, N_time, N_fixed))
+
+  if(time_effect) {
+    time_effect_shift <- -1
+    for(p in 1:N_patients) {
+      X[p,,N_fixed] <- 1:N_time + time_effect_shift
+    }
+  }
+    
   #Put treatment effect into X
   if(N_treatments > 0) {
     
@@ -99,7 +131,7 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
       patients_for_treatment <- start:(start + patients_per_treatment - 1)
       treatment_per_patient[patients_for_treatment] <- t
       for(p in patients_for_treatment) {
-        X[p, (treatment_start_times[p] + 1):N_time, t + 1] <- 1
+        X[p, (treatment_start_times[p] + 1):N_time, t] <- 1
       }
     }
   } else {
@@ -109,13 +141,14 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
   
   beta <- rnorm(N_fixed, 0, sd = fixed_prior_sd)
   
+  o_types_true <- array(0L, c(N_patients, N_time))
   o_types_full <- array(0L, c(N_patients, N_time))
   viral_load_full <- array(NA_real_, c(N_patients, N_time))
-
+  viral_load_true_full <- array(NA_real_, c(N_patients, N_time))
+  
   for(p in 1:N_patients) {  
     state <- s_ill
     viral_load_true <- rnorm(1, prior$initial_viral_load_mu, prior$initial_viral_load_sd)
-    
     for(t in 1:N_time) {
       linpred <- sum(X[p,t,] * beta)
       
@@ -126,11 +159,13 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
           state <- s_healthy
         }
       }
+      o_types_true[p, t] <- state
       o_types_full[p, t] <- sample(1:N_obs_types, size = 1, prob = observation_model[state,])
       
       # Update Kalman
       viral_load_linpred <- viral_load_intercept + linpred
       viral_load_true <- viral_load_true + viral_load_linpred + rnorm(1, 0, process_noise_sd)
+      viral_load_true_full[p, t] <- viral_load_true
       viral_load_full[p, t] <- rnorm(1, viral_load_true, obs_noise_sd)
     }
   }
@@ -162,12 +197,8 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
       N_fixed = N_fixed,
       X = X,
       fixed_prior_sd = fixed_prior_sd,
-      time_effect_shift = time_effect_shift,
       treatment_per_patient = treatment_per_patient,
-      treatment_start_times = treatment_start_times,
-      kalman_total_noise_prior_alpha = kalman_total_noise_prior_alpha,
-      kalman_total_noise_prior_beta = kalman_total_noise_prior_alpha
-      
+      treatment_start_times = treatment_start_times
     )),
     true = list(
       beta = beta,
@@ -177,7 +208,8 @@ simulator <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_p
       kalman_process_noise_frac = process_noise_frac,
       sensitivity = sensitivity,
       specificity = specificity,
-      viral_load_true = viral_load_true
+      viral_load_true_full = viral_load_true_full,
+      o_types_true = o_types_true
       #observation_model = observation_model
     )
   )
@@ -220,3 +252,41 @@ plot_sim_data_observed <- function(data) {
   
   observed_dataset %>% ggplot(aes(x = time, y = viral_load, group = patient, shape = type)) + geom_line(aes(color = treated_group)) + geom_point()
 }
+
+
+plot_sim_data_true <- function(data) {
+  
+  patient_data <- data.frame(patient = 1:data$observed$N_patients, 
+                             treatment_start_time = data$observed$treatment_start_times,
+                             treatment = data$observed$treatment_per_patient) 
+  
+  if(data$observed$N_treatments > 0) {
+    treatment_labels <- c("No", paste0("t_",1:data$observed$N_treatments))
+  } else {
+    treatment_labels <- "No"
+  }
+  
+  true_dataset <- data.frame(patient = 1:data$observed$N_patients) %>%
+    crossing(data.frame(time = 1:data$observed$N_time)) %>%
+    rowwise() %>%
+    mutate(viral_load = data$true$viral_load_true_full[patient, time],
+           o_type_raw = data$true$o_types_true[patient, time]) %>%
+    ungroup() %>% 
+    mutate(
+      o_type = factor(o_type_raw, levels = c(data$observed$o_neg,data$observed$o_pos), labels = c("NEG","POS")),
+      type = o_type
+      #type = interaction(o_type, factor(data$observed$viral_load_known, levels = c(0,1), labels = c("unknown","known")))
+    )  %>%
+    inner_join(patient_data) %>%
+    mutate(
+      treated = treatment > 0 & time >= treatment_start_time,
+      treated_group = factor(treated * treatment, levels = 0:data$observed$N_treatments, labels = treatment_labels))
+  
+  true_dataset <- true_dataset %>%
+    mutate(time = time + runif(n(), -0.2, 0.2)) %>%
+    arrange(time)
+  
+  
+  true_dataset %>% ggplot(aes(x = time, y = viral_load, group = patient, shape = type)) + geom_line(aes(color = treated_group)) + geom_point()
+}
+

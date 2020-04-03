@@ -16,18 +16,34 @@ rstan_options(auto_write = TRUE)
 source("R/evaluation_tools.R")
 source("R/sbc.R")
 source("R/sampling_multi.R")
-source("R/hmm_devel_tools.R")
+source("R/hmm_kalman_devel_tools.R")
 
 ```
 
 
 ```{r}
 #system.time({
-#model <- cmdstan_model(stan_file = here::here("hmm.stan"))
+model <- cmdstan_model(stan_file = here::here("hmm_kalman.stan"))
 #})
 #system.time({
-model <- rstan::stan_model(file = here::here("hmm.stan"))
+#model <- rstan::stan_model(file = here::here("hmm_kalman.stan"))
 #})
+```
+
+
+```{r}
+inv_gamma_match_error <- function(p, q025, q975) {
+  alpha <- p[1]
+  beta <- p[2]
+  inv_gamma_cdf <- function(x, alpha, beta) { pgamma(beta / x, alpha, lower = FALSE) }
+  (inv_gamma_cdf(q025, alpha, beta) - 0.025)^2 + (inv_gamma_cdf(q975, alpha, beta) - 0.975)^2
+}
+
+opt_res <- nlm(inv_gamma_match_error, p = c(1,1), q025 = 0.5, q975 = 10)
+sims <- 1/rgamma(1e5,shape = opt_res$estimate[1], rate = opt_res$estimate[2])
+mean(sims < 0.5)
+mean(sims > 10)
+hist(sims)
 ```
 
 
@@ -36,7 +52,7 @@ Single test
 
 ```{r}
 adapt_delta <- 0.8
-data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)
+data <- simulator(N_patients = 5, N_patients_unknown_load = 0, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, prior = prior)
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
 } else {
@@ -45,8 +61,8 @@ if(inherits(model, "stanmodel")) {
 }
 evaluation_summary(fit, data$true)
 
-plot_sim_data_true_hmm(data)
-plot_sim_data_observed_hmm(data)
+# plot_sim_data_true(data)
+plot_sim_data_observed(data)
 
 data$true
 
@@ -54,11 +70,11 @@ data$true
 ```
 
 ```{r}
-for(i in 1:5) {
-  data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)
+for(i in 1:10) {
+  data <- simulator(N_patients = 5, N_patients_unknown_load = 0, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, prior = prior)
   
-  (plot_sim_data_observed_hmm(data) + ggtitle("Observed",i)) %>% print()
-  (plot_sim_data_true_hmm(data) + ggtitle("true",i)) %>% print()
+  (plot_sim_data_observed(data) + ggtitle("Observed",i)) %>% print()
+  (plot_sim_data_true(data) + ggtitle("true",i)) %>% print()
   cat("\n======== ",i, " ===========\n")
   print(data$true)
 }
@@ -68,7 +84,7 @@ for(i in 1:5) {
 SBC
 
 ```{r}
-sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)}, N_steps = 20, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {simulator(N_patients = 30, N_patients_unknown_load = 5, N_time = 15, N_obs_per_patient = 4, N_treatments = 1, prior = prior, time_effect = FALSE)}, N_steps = 500, control = list(adapt_delta = adapt_delta))
 
 sbc_res$params %>% plot_sbc_params(binwidth = 5)
 summarise_sbc_diagnostics(sbc_res)

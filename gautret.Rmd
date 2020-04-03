@@ -70,6 +70,60 @@ gautret %>% filter(Source == "Excluded") %>% select(ID, Clinical_Status, Hydroxy
 
 https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fulltext Could maybe serve as an additional justification for the model.
 
+
+```{r}
+model <- cmdstan_model(stan_file = here::here("hmm_pcr.stan"))
+#model <- rstan::stan_model(file = here::here("change_point.stan"))
+
+gautret_long_filtered <- gautret_long %>% filter(!(PCR %in% c("ICU","DEATH")))
+
+observation_type <- case_when(gautret_long_filtered$PCR == "NEG" ~ 1,
+                                     #gautret_long_filtered$PCR == "POS" ~ 2,
+                                     TRUE ~ 2
+                                     )
+
+
+
+data_for_model <- c(calculate_derived_prior_values(prior), list(
+        N_patients = nrow(gautret),
+        N_obs = nrow(gautret_long_filtered),
+        N_fixed = 2,
+        patients = gautret_long$NumericID,
+        times = gautret_long_filtered$Day + gautret_long_filtered$Days_From_Onset_Imputed,
+        o_types = observation_type,
+        viral_load_known = !(gautret_long_filtered$PCR %in% c("POS","NEG","ICU","DEATH")),
+        viral_load = rep(0, nrow(gautret_long_filtered)),
+        fixed_prior_sd = rep(1, 2) 
+      ))
+
+data_for_model$N_time <- max(data_for_model$times)
+
+X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, 2))
+for(p in 1:N_patients) {
+  patient_data <- gautret %>% filter(NumericID == p)
+  if(patient_data$Hydroxychloroquine == "Yes") {
+    treatment_times <- patient_data$Days_From_Onset_Imputed : data_for_model$N_time
+    #TODO fill X,
+  }
+}
+
+data_for_model$X <- X
+
+data_for_model$viral_load[data_for_model$viral_load_known] <- 
+  as.double(gautret_long_filtered$PCR[data_for_model$viral_load_known])
+
+if(inherits(model, "stanmodel")) {
+  fit <- sampling(model, data = data_for_model)
+} else {
+  cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
+  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+}
+
+prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
+
+```
+
+
 ```{r}
 #model <- cmdstan_model(stan_file = here::here("change_point.stan"))
 model <- rstan::stan_model(file = here::here("change_point.stan"))
