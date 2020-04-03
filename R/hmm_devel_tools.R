@@ -31,7 +31,8 @@ ordered_logistic_probs <- function(lambda, c) {
   res
 }
 
-sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, N_time, N_ill_states, prior, 
+sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, 
+                    N_time, N_ill_states, prior, use_severe_state = TRUE,
                       time_effect = FALSE) {
 
   # Setup the HMM part
@@ -39,10 +40,15 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   o_pos <-  2
   o_severe <- 3
   
-  N_states <- N_ill_states + 2
+  if(use_severe_state) {
+    N_states <- N_ill_states + 2
+    s_severe <- N_states
+  } else {
+    N_states <- N_ill_states + 1
+    s_severe <- -1
+  }
   s_healthy <- 1
   ill_states_shift <- 1
-  s_severe <- N_states
   
   central_ill_state <- as.integer(ceiling(N_ill_states / 2))
   
@@ -61,7 +67,9 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   transition_thresholds <- sort(rnorm(N_states - 1, 0, prior$transition_thresholds_prior_sd))
   
   state_intercepts_high <- sort(abs(rnorm(N_ill_states - central_ill_state, 0, sd = prior$state_intercept_prior_sd)))
+  dim(state_intercepts_high) <- N_ill_states - central_ill_state
   neg_state_intercepts_low <- sort(abs(rnorm(central_ill_state - 1, 0, sd = prior$state_intercept_prior_sd)))
+  dim(neg_state_intercepts_low) <- central_ill_state - 1
   state_intercepts <- c(rev(-neg_state_intercepts_low), 0, state_intercepts_high)
 
   # Setup shared elements
@@ -189,12 +197,17 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
 
   list(
     observed = c(prior, list(
+      transition_thresholds = transition_thresholds,
+      state_intercepts_high = state_intercepts_high,
+      neg_state_intercepts_low = neg_state_intercepts_low,
+      
       N_patients = N_patients,
       N_obs = N_obs,
       N_time = N_time,
       N_fixed = N_fixed,
       N_ill_states = N_ill_states,
       central_ill_state = central_ill_state,
+      use_severe_state = use_severe_state,
       ill_mean_viral_load = ill_mean_viral_load,
       o_neg = o_neg,
       o_pos = o_pos,
@@ -218,9 +231,6 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       sensitivity = sensitivity,
       specificity = specificity,
       observation_sigma = observation_sigma,
-      transition_thresholds = transition_thresholds,
-      state_intercepts_high = state_intercepts_high,
-      neg_state_intercepts_low = neg_state_intercepts_low,
       # used only in plot functions
       states_true = states_true
       #observation_model = observation_model

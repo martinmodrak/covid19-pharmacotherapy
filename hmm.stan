@@ -31,6 +31,7 @@ data {
   int<lower=1> o_neg;
   int<lower=1> o_pos;
   int<lower=1> o_severe;
+  int<lower=0, upper=1> use_severe_state;
   
   int<lower=1, upper=3> o_types[N_obs];
   int<lower=1, upper=N_patients> patients[N_obs];
@@ -45,24 +46,47 @@ data {
   real<lower=0> transition_thresholds_prior_sd;
   real<lower=0> state_intercept_prior_sd;
 
+  ordered[N_ill_states + use_severe_state] transition_thresholds;
+  //ordered[N_states - 1] transition_thresholds;
+  //Defines the transition model for ill states wrt. linear predictor
+  positive_ordered[N_ill_states - central_ill_state] state_intercepts_high;
+  positive_ordered[central_ill_state - 1] neg_state_intercepts_low;
+
 }
 
 transformed data {
-  int N_states = N_ill_states + 2; //ill + healthy + severe
+  int N_states = N_ill_states + 1 + use_severe_state; //ill + healthy + severe
   int s_healthy = 1;
   int ill_states_shift = 1;
   int ill_states[N_ill_states];
-  int s_severe = N_states;
+  int s_severe = use_severe_state ? N_states : -1;
 
   //0 means no observation
   int<lower=0,upper=N_obs> obs_ids[N_patients, N_time] = rep_array(0, N_patients, N_time);
   int<lower=0> patient_max_time[N_patients];
+  int<lower=0> patient_min_time_severe[N_patients] = rep_array(N_time + 1, N_patients);
 
   for(n in 1:N_obs) {
     patient_max_time[patients[n]] = max(times[n], patient_max_time[patients[n]]);
     obs_ids[patients[n], times[n]] = n;
+    if(o_types[n] == o_severe) {
+      if(!use_severe_state) {
+        reject("Severe observation is not allowed when use_severe_state = 0");
+      }
+      patient_min_time_severe[patients[n]] = min(times[n], patient_min_time_severe[patients[n]]);
+    }
+  }
+
+  // Remove all but the first observation of severe (it does not inform the current model in any way)
+  for(p in 1:N_patients) {
+    if(patient_min_time_severe[p] < N_time) {
+      for(t in patient_min_time_severe[p]:N_time) {
+        obs_ids[p, t] = 0;
+      }
+    }
   }
   
+
   for(i in 1:N_ill_states) {
     ill_states[i] = i + ill_states_shift;
   }
@@ -76,10 +100,6 @@ parameters {
   real<lower=0.5, upper=1> specificity; 
   real<lower=0> observation_sigma;
   
-  //Defines the transition model for ill states wrt. linear predictor
-  ordered[N_states - 1] transition_thresholds;
-  positive_ordered[N_ill_states - central_ill_state] state_intercepts_high;
-  positive_ordered[central_ill_state - 1] neg_state_intercepts_low;
 }
 
 transformed parameters {
@@ -100,35 +120,33 @@ transformed parameters {
 model {
   //Assumming ill at t = 0. Time is shifted by one, to include 0 at the start
   matrix[N_time + 1, N_states] log_forward_p;
-  real acc_transition[N_states];
-  vector[N_states] transition_matrix[N_states];
   row_vector[N_states] observation_model_negative;
   row_vector[N_states] observation_model_positive_unknown;
+  
+  //transitions are only possible _from_ ill states
+  real acc_transition[N_ill_states];
+  vector[N_states] transition_matrix[N_ill_states]; 
+
 
   // Init HMM, at t == 0 the state is equally separated among all ill states
   log_forward_p[1, ill_states] = rep_row_vector(-log(N_ill_states), N_ill_states);
   log_forward_p[1, s_healthy] = log(0);
-  log_forward_p[1, s_severe] = log(0);
-
-  //No transitions from healthy and from severe states
-  //These elements of the transition_matrix can be prefilled
-  //and will not change in the inner cycle
-  transition_matrix[s_healthy, s_healthy] = 0;
-  transition_matrix[s_severe, s_severe] = 0;
-  transition_matrix[s_severe, s_healthy] = log(0);
-  transition_matrix[s_healthy, s_severe] = log(0);
-  for(s in ill_states) {
-    transition_matrix[s_healthy, s] = log(0);
-    transition_matrix[s_severe, s] = log(0);
+  if(use_severe_state) {
+    log_forward_p[1, s_severe] = log(0);
   }
+
 
   //Init constant parts of the observation model
   observation_model_negative[s_healthy] = log(specificity);
-  observation_model_negative[s_severe] = log(0);
+  if(use_severe_state) {
+    observation_model_negative[s_severe] = log(0);
+  }
   observation_model_negative[ill_states] = rep_row_vector(log1m(sensitivity), N_ill_states); //TODO consider gradual change among states
 
   observation_model_positive_unknown[s_healthy] =  log1m(specificity);
-  observation_model_positive_unknown[s_severe] = log(0);
+  if(use_severe_state) {
+    observation_model_positive_unknown[s_severe] = log(0);
+  }
   observation_model_positive_unknown[ill_states] = rep_row_vector(log(sensitivity), N_ill_states);
 
   for(p in 1:N_patients) {
@@ -141,29 +159,36 @@ model {
         linpred += X[p, t,] * beta;
       }
       
-      //Transitions
-      for(s in ill_states) {
-        transition_matrix[s, ] = ordered_logistic_log_probs(state_intercepts[s - ill_states_shift] + linpred, transition_thresholds);
+      //Transitions - only allowed from ill states
+      for(s_index in 1:N_ill_states) {
+        transition_matrix[s_index, ] = ordered_logistic_log_probs(state_intercepts[s_index] + linpred, transition_thresholds);
       }
       for(s_to in 1:N_states) {
-        for(s_from in 1:N_states) {
-          acc_transition[s_from] = log_forward_p[t_hmm - 1, s_from] + transition_matrix[s_from, s_to];
+        for(s_from in ill_states) {
+          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + transition_matrix[s_from - ill_states_shift, s_to];
         }
-        log_forward_p[t_hmm, s_to] = log_sum_exp(acc_transition);
+        if(s_to == s_healthy || (use_severe_state && s_to == s_severe)) {
+          //Add the probability of already being in one of the "terminal" states
+          log_forward_p[t_hmm, s_to] = log_sum_exp(append_array(acc_transition, {log_forward_p[t_hmm - 1, s_to]}));
+        } else {
+          log_forward_p[t_hmm, s_to] = log_sum_exp(acc_transition);
+        }
       }
       
       //Observations
       if(id != 0) {
         if(o_types[id] == o_severe) {
-          log_forward_p[t_hmm, s_healthy] += log(0);
+          log_forward_p[t_hmm, s_healthy] = log(0);
           for(s in ill_states) {
-            log_forward_p[t_hmm, s] += log(0);
+            log_forward_p[t_hmm, s] = log(0);
           }
         } else if(o_types[id] == o_neg) {
           log_forward_p[t_hmm, ] += observation_model_negative;
         } else if(o_types[id] == o_pos) {
           if(viral_load_known[id]) {
-            log_forward_p[t_hmm, s_severe] += log(0);
+            if(use_severe_state) {
+              log_forward_p[t_hmm, s_severe] = log(0);
+            }
             log_forward_p[t_hmm, s_healthy] += log1m(specificity); //TODO consider taking viral_load into account
             for(s in ill_states) {
               log_forward_p[t_hmm, s] += log(sensitivity) + normal_lpdf(viral_load[id] | ill_mean_viral_load[s - ill_states_shift], observation_sigma);
