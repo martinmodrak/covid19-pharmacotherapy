@@ -31,6 +31,52 @@ ordered_logistic_probs <- function(lambda, c) {
   res
 }
 
+transform_predictors_to_unique <- function(X) {
+  if(typeof(X) != "double") {
+    stop("has to be double")
+  }
+  if(length(dim(X)) != 3) {
+    stop("Expecting 3 dims - patients, time, effect")
+  }
+  
+  N_patients <- dim(X)[1]
+  N_time <- dim(X)[2]
+  N_fixed <- dim(X)[3]
+  
+  X_index <- array(-1, c(N_patients, N_time))
+  
+  X_dict <- list()
+  next_id <- 1
+  for(p in 1:N_patients) {
+    for(t in 1:N_time) {
+      str_index <- paste0(X[p,t,], collapse = "__x__")
+      if(!is.null(X_dict[[str_index]])) {
+        X_index[p,t] <- X_dict[[str_index]]$id
+      } else {
+        X_index[p,t] <- next_id
+        X_dict[[str_index]] <- list(id = next_id, value = X[p,t,])
+        next_id <- next_id + 1
+      }
+    }
+  }
+  
+  N_predictor_sets <- next_id - 1
+  X_new <- array(NA_real_, c(N_predictor_sets, N_fixed))
+  for(n in names(X_dict)) {
+    X_new[X_dict[[n]]$id,] <- X_dict[[n]]$value
+  }
+  
+  if(any(is.na(X_new))) {
+    stop("Should not be NA")
+  }
+  
+  list(
+    N_predictor_sets =N_predictor_sets,
+    X = X_new,
+    X_index = X_index
+  )
+}
+
 sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, 
                     N_time, N_ill_states, prior, use_severe_state = TRUE,
                       time_effect = FALSE) {
@@ -65,6 +111,7 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
 
   observation_sigma <- abs(rnorm(1, sd = prior$observation_sigma_prior_sd))
   transition_thresholds <- sort(rnorm(N_states - 1, 0, prior$transition_thresholds_prior_sd))
+  dim(transition_thresholds) <- N_states - 1
   
   state_intercepts_high <- sort(abs(rnorm(N_ill_states - central_ill_state, 0, sd = prior$state_intercept_prior_sd)))
   dim(state_intercepts_high) <- N_ill_states - central_ill_state
@@ -196,10 +243,9 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   }
 
   list(
-    observed = c(prior, list(
-      transition_thresholds = transition_thresholds,
-      state_intercepts_high = state_intercepts_high,
-      neg_state_intercepts_low = neg_state_intercepts_low,
+    observed = c(prior, 
+                 transform_predictors_to_unique(X),
+                 list(
       
       N_patients = N_patients,
       N_obs = N_obs,
@@ -217,8 +263,7 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       times = times,
       viral_load = viral_load,
       viral_load_known = viral_load_known,
-      X = X,
-      
+
       fixed_prior_sd = fixed_prior_sd,
 
       # Used only in plot functions
@@ -230,6 +275,9 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       beta = beta,
       sensitivity = sensitivity,
       specificity = specificity,
+      transition_thresholds = transition_thresholds,
+      state_intercepts_high = state_intercepts_high,
+      neg_state_intercepts_low = neg_state_intercepts_low,
       observation_sigma = observation_sigma,
       # used only in plot functions
       states_true = states_true

@@ -38,7 +38,11 @@ data {
   int<lower=1, upper = N_time> times[N_obs];
   vector[N_obs] viral_load;
   int<lower=0, upper=1> viral_load_known[N_obs];
-  matrix[N_time, N_fixed] X[N_patients];
+  
+  int N_predictor_sets;
+  int<lower=1,upper=N_predictor_sets> X_index[N_patients, N_time];
+  
+  matrix[N_predictor_sets, N_fixed] X;
   
   
   vector<lower=0>[N_fixed] fixed_prior_sd;
@@ -46,11 +50,7 @@ data {
   real<lower=0> transition_thresholds_prior_sd;
   real<lower=0> state_intercept_prior_sd;
 
-  ordered[N_ill_states + use_severe_state] transition_thresholds;
-  //ordered[N_states - 1] transition_thresholds;
-  //Defines the transition model for ill states wrt. linear predictor
-  positive_ordered[N_ill_states - central_ill_state] state_intercepts_high;
-  positive_ordered[central_ill_state - 1] neg_state_intercepts_low;
+  //ordered[N_ill_states + use_severe_state] transition_thresholds;
 
 }
 
@@ -95,6 +95,11 @@ transformed data {
 parameters {
   vector[N_fixed] beta;
 
+  ordered[N_states - 1] transition_thresholds;
+  //Defines the transition model for ill states wrt. linear predictor
+  positive_ordered[N_ill_states - central_ill_state] state_intercepts_high;
+  positive_ordered[central_ill_state - 1] neg_state_intercepts_low;
+
   //base for the observation model
   real<lower=0.5, upper=1> sensitivity; 
   real<lower=0.5, upper=1> specificity; 
@@ -123,9 +128,21 @@ model {
   row_vector[N_states] observation_model_negative;
   row_vector[N_states] observation_model_positive_unknown;
   
+  
   //transitions are only possible _from_ ill states
   real acc_transition[N_ill_states];
-  vector[N_states] transition_matrix[N_ill_states]; 
+  vector[N_states] transition_log_p[N_predictor_sets, N_ill_states]; 
+
+  //Precompute all the transition matrices
+  for(x_id in 1:N_predictor_sets) {
+    real linpred = 0;
+    if(N_fixed > 0) {
+      linpred += X[x_id, ] * beta;
+    }
+    for(s_index in 1:N_ill_states) {
+      transition_log_p[x_id, s_index, ] = ordered_logistic_log_probs(state_intercepts[s_index] + linpred, transition_thresholds);
+    }
+  }
 
 
   // Init HMM, at t == 0 the state is equally separated among all ill states
@@ -154,18 +171,11 @@ model {
       //HMM update (the HMM time is shifted by one to include t = 0)
       int t_hmm = t + 1;
       int id = obs_ids[p, t];
-      real linpred = 0;
-      if(N_fixed > 0) {
-        linpred += X[p, t,] * beta;
-      }
       
       //Transitions - only allowed from ill states
-      for(s_index in 1:N_ill_states) {
-        transition_matrix[s_index, ] = ordered_logistic_log_probs(state_intercepts[s_index] + linpred, transition_thresholds);
-      }
       for(s_to in 1:N_states) {
         for(s_from in ill_states) {
-          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + transition_matrix[s_from - ill_states_shift, s_to];
+          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + transition_log_p[X_index[p,t], s_from - ill_states_shift, s_to];
         }
         if(s_to == s_healthy || (use_severe_state && s_to == s_severe)) {
           //Add the probability of already being in one of the "terminal" states
@@ -186,12 +196,23 @@ model {
           log_forward_p[t_hmm, ] += observation_model_negative;
         } else if(o_types[id] == o_pos) {
           if(viral_load_known[id]) {
+            vector[N_ill_states] per_state_lp;
             if(use_severe_state) {
               log_forward_p[t_hmm, s_severe] = log(0);
             }
-            log_forward_p[t_hmm, s_healthy] += log1m(specificity); //TODO consider taking viral_load into account
+            for(s_index in 1:N_ill_states) {
+              per_state_lp[s_index] = normal_lpdf(viral_load[id] | ill_mean_viral_load[s_index], observation_sigma);
+            }
+            // Healthy -> any positive state is equally probable
+            log_forward_p[t_hmm, s_healthy] += log1m(specificity) -log(N_ill_states); 
+            if(N_ill_states > 1) {
+              log_forward_p[t_hmm, s_healthy] += log_sum_exp(per_state_lp);
+            } else {
+              log_forward_p[t_hmm, s_healthy] += per_state_lp[1];
+            }
+              
             for(s in ill_states) {
-              log_forward_p[t_hmm, s] += log(sensitivity) + normal_lpdf(viral_load[id] | ill_mean_viral_load[s - ill_states_shift], observation_sigma);
+              log_forward_p[t_hmm, s] += log(sensitivity) + per_state_lp[s - ill_states_shift];
             }
           } else {
             log_forward_p[t_hmm, ] += observation_model_positive_unknown;

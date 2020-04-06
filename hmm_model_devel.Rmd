@@ -23,10 +23,10 @@ source("R/hmm_devel_tools.R")
 
 ```{r}
 #system.time({
-#model <- cmdstan_model(stan_file = here::here("hmm.stan"))
+model <- cmdstan_model(stan_file = here::here("hmm.stan"))
 #})
 #system.time({
-model <- rstan::stan_model(file = here::here("hmm.stan"))
+#model <- rstan::stan_model(file = here::here("hmm.stan"))
 #})
 ```
 
@@ -36,9 +36,10 @@ Single test
 
 ```{r}
 adapt_delta <- 0.8
-data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)
+data <- sim_hmm(N_patients = 30, N_patients_unknown_load = 5, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = FALSE)
+  #sim_hmm(N_patients = 20, N_patients_unknown_load = 20, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = FALSE)
 if(inherits(model, "stanmodel")) {
-  fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
+  fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta), chains = 1)
 } else {
   cmdstan_fit <- model$sample(data = data$observed, adapt_delta = adapt_delta)
   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
@@ -52,6 +53,11 @@ data$true
 
 
 ```
+
+```{r}
+pairs(fit)
+```
+
 
 ```{r}
 for(i in 1:5) {
@@ -68,7 +74,13 @@ for(i in 1:5) {
 SBC
 
 ```{r}
-sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)}, N_steps = 20, control = list(adapt_delta = adapt_delta))
+# cache_dir <- here::here("local_tmp")
+# if(!dir.exists(cache_dir)) {
+#   dir.create(cache_dir)
+# }
+
+adapt_delta <- 0.95
+sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 30, N_patients_unknown_load = 5, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = TRUE)}, N_steps = 10, control = list(adapt_delta = adapt_delta))
 
 sbc_res$params %>% plot_sbc_params(binwidth = 5)
 summarise_sbc_diagnostics(sbc_res)
