@@ -22,7 +22,10 @@ library(here)
 library(cowplot)
 theme_set(theme_cowplot())
 
-source("R/model_tools.R")
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+source("R/hmm_tools.R")
 
 ```
 
@@ -72,8 +75,8 @@ https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fullt
 
 
 ```{r}
-model <- cmdstan_model(stan_file = here::here("hmm.stan"))
-#model <- rstan::stan_model(file = here::here("change_point.stan"))
+#model <- cmdstan_model(stan_file = here::here("hmm.stan"))
+model <- rstan::stan_model(file = here::here("hmm.stan"))
 
 #gautret_long_filtered <- gautret_long %>% filter(!(PCR %in% c("ICU","DEATH")))
 
@@ -105,7 +108,8 @@ data_for_model <- c(prior_hmm, list(
         times = gautret_long$Day + gautret_long$Days_From_Onset_Imputed + 1,
         o_types = observation_type,
         viral_load_known = !(gautret_long$PCR %in% c("POS","NEG","ICU","DEATH")),
-        fixed_prior_sd = rep(1, 2) 
+        fixed_prior_sd = rep(1, 2),
+        generate_predictions = 1
       ))
 
 data_for_model$viral_load = rep(0, nrow(gautret_long))
@@ -130,15 +134,29 @@ data_for_model <- c(data_for_model, transform_predictors_to_unique(X))
 
 
 if(inherits(model, "stanmodel")) {
-  fit <- sampling(model, data = data_for_model)
+  fit <- sampling(model, data = data_for_model, control = list(adapt_delta = 0.95))
+  check_hmc_diagnostics(fit)
 } else {
   cmdstan_fit <- model$sample(data = data_for_model, adapt_delta = 0.95)
   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
 }
 
-#prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
+prepared_data <- prepare_data_for_plotting_hmm(data_for_model, gautret, fit)
 
 ```
+
+
+```{r}
+step_size <- 4
+for(step in 1:(ceiling(nrow(gautret) / step_size))) {
+  ids <- ((step - 1) * step_size + 1) : (step* step_size)
+  plot_fitted_patients_hmm(prepared_data, ids) %>% print()
+  plot_fitted_patients_hmm(prepared_data, ids, type = "predicted") %>% print()
+  
+}
+
+```
+
 
 
 ```{r}
@@ -181,13 +199,6 @@ prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
 ```{r}
 
 
-step_size <- 9
-for(step in 1:(ceiling(nrow(gautret) / step_size))) {
-  ids <- ((step - 1) * step_size + 1) : (step* step_size)
-  plot_fitted_patients(prepared_data, ids) %>% print()
-  plot_fitted_patients(prepared_data, ids, type = "predicted") %>% print()
-  
-}
 ```
 
 ```{r}
@@ -219,3 +230,15 @@ brms::make_stancode( observations | cens(cens, y2) ~ 0 + (1 + time || ID), data 
 ```{r}
 gautret %>% filter(Source != "Excluded") %>% ggplot(aes(Age)) + geom_histogram(binwidth = 10) + facet_wrap(~Group, ncol = 1)
 ```
+
+
+Molin et al. - CI
+
+```{r}
+pos <- 8
+died <- 1
+negative <- 2
+qbeta(c(0.025, 0.975), negative + 1, pos + 1)
+qbeta(c(0.025, 0.975), negative  + 1, pos + died+ 1)
+```
+

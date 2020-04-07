@@ -1,82 +1,3 @@
-prior_hmm <- list(
-  fixed_prior_sd_all = 5,
-  observation_sigma_prior_sd = 8,
-  transition_thresholds_prior_sd = 5,
-  state_intercept_prior_sd = 3,
-  time_effect_prior_sd = 0.3
-)
-
-inv_logit <- function(a) {
-  if (a < 0) {
-    exp_a = exp(a);
-    if (a < log(2.2e-16)) {
-      exp_a;
-    }
-    exp_a / (1 + exp_a);
-  }
-  1/(1 + exp(-a));
-}
-
-ordered_logistic_probs <- function(lambda, c) {
-  N = length(c) + 1
-  res <- array(NA_real_, N)
-  res[1] <- 1 - inv_logit(lambda - c[1])
-  if(N > 2) {
-    for(i in 2:(N-1)) {
-      res[i] <- inv_logit(lambda - c[i - 1]) - inv_logit(lambda - c[i])
-    }
-  }
-  res[N] <- inv_logit(lambda - c[N - 1])
-  
-  res
-}
-
-transform_predictors_to_unique <- function(X) {
-  if(typeof(X) != "double") {
-    stop("has to be double")
-  }
-  if(length(dim(X)) != 3) {
-    stop("Expecting 3 dims - patients, time, effect")
-  }
-  
-  N_patients <- dim(X)[1]
-  N_time <- dim(X)[2]
-  N_fixed <- dim(X)[3]
-  
-  X_index <- array(-1, c(N_patients, N_time))
-  
-  X_dict <- list()
-  next_id <- 1
-  for(p in 1:N_patients) {
-    for(t in 1:N_time) {
-      str_index <- paste0(X[p,t,], collapse = "__x__")
-      if(!is.null(X_dict[[str_index]])) {
-        X_index[p,t] <- X_dict[[str_index]]$id
-      } else {
-        X_index[p,t] <- next_id
-        X_dict[[str_index]] <- list(id = next_id, value = X[p,t,])
-        next_id <- next_id + 1
-      }
-    }
-  }
-  
-  N_predictor_sets <- next_id - 1
-  X_new <- array(NA_real_, c(N_predictor_sets, N_fixed))
-  for(n in names(X_dict)) {
-    X_new[X_dict[[n]]$id,] <- X_dict[[n]]$value
-  }
-  
-  if(any(is.na(X_new))) {
-    stop("Should not be NA")
-  }
-  
-  list(
-    N_predictor_sets =N_predictor_sets,
-    X = X_new,
-    X_index = X_index
-  )
-}
-
 sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per_patient, 
                     N_time, N_ill_states, prior, use_severe_state = TRUE,
                       time_effect = FALSE) {
@@ -217,7 +138,12 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
         } else {
           o_types_full[p, t] <- o_pos
           viral_load_mean <- ill_mean_viral_load[rdunif(1, a = 1, b = N_ill_states)]
-          viral_load_full[p, t] <- rnorm(1, viral_load_mean, sd = observation_sigma)
+          repeat {
+            viral_load_full[p, t] <- rnorm(1, viral_load_mean, sd = observation_sigma)
+            if(viral_load_full[p, t] > 0) {
+              break;
+            }
+          }
         }
       } else {
         if(runif(1) < 1 - sensitivity) {
@@ -225,7 +151,12 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
         } else {
           o_types_full[p, t] <- o_pos
           viral_load_mean <- ill_mean_viral_load[state - ill_states_shift]
-          viral_load_full[p, t] <- rnorm(1, viral_load_mean, sd = observation_sigma)
+          repeat {
+            viral_load_full[p, t] <- rnorm(1, viral_load_mean, sd = observation_sigma)
+            if(viral_load_full[p, t] > 0) {
+              break;
+            }
+          }
         }
       }
     }
@@ -265,7 +196,8 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       viral_load_known = viral_load_known,
 
       fixed_prior_sd = fixed_prior_sd,
-
+      generate_predictions = 0,
+      
       # Used only in plot functions
       N_treatments = N_treatments,
       treatment_per_patient = treatment_per_patient,

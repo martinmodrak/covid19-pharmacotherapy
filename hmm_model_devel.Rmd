@@ -16,6 +16,7 @@ rstan_options(auto_write = TRUE)
 source("R/evaluation_tools.R")
 source("R/sbc.R")
 source("R/sampling_multi.R")
+source("R/hmm_tools.R")
 source("R/hmm_devel_tools.R")
 
 ```
@@ -36,7 +37,7 @@ Single test
 
 ```{r}
 adapt_delta <- 0.8
-data <- sim_hmm(N_patients = 30, N_patients_unknown_load = 5, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = FALSE)
+data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, N_ill_states = 1, prior = prior_hmm, use_severe_state = FALSE)
   #sim_hmm(N_patients = 20, N_patients_unknown_load = 20, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = FALSE)
 if(inherits(model, "stanmodel")) {
   fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta), chains = 1)
