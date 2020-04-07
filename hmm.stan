@@ -103,7 +103,7 @@ functions {
       //Transitions - only allowed from ill states
       for(s_to in 1:N_states) {
         for(s_from in ill_states) {
-          acc_transition[s_from - ill_states_shift] = log_forward_p[t, s_from] + transition_log_p[X_index[patient_id,t], s_to, s_from - ill_states_shift];
+          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + transition_log_p[X_index[patient_id,t], s_to, s_from - ill_states_shift];
         }
         if(s_to == s_healthy || (use_severe_state && s_to == s_severe)) {
           //Add the probability of already being in one of the "terminal" states
@@ -113,8 +113,15 @@ functions {
         }
       }
       
+      // if(patient_id == 1) {
+      //   print("Before: ", log_forward_p[t_hmm, ]);
+      // }
+      
       //Observations
       if(id != 0) {
+        // if(patient_id == 1) {
+        //   print("Obs: ", o_types[id]);
+        // }
         if(o_types[id] == o_severe) {
           log_forward_p[t_hmm, s_healthy] = log(0);
           for(s in ill_states) {
@@ -153,6 +160,11 @@ functions {
         }
         
       }
+      
+      // if(patient_id == 1) {
+      //   print("After: ", log_forward_p[t_hmm, ]);
+      // }
+      
     }
     
     return log_forward_p; 
@@ -225,9 +237,10 @@ transformed data {
   // Remove all but the first observation of severe (it does not inform the current model in any way)
   for(p in 1:N_patients) {
     if(patient_min_time_severe[p] < N_time) {
-      for(t in patient_min_time_severe[p]:N_time) {
+      for(t in (patient_min_time_severe[p] + 1):N_time) {
         obs_ids[p, t] = 0;
       }
+      patient_max_time[p] = patient_min_time_severe[p];
     }
   }
   
@@ -361,6 +374,10 @@ generated quantities {
           observation_model_negative, observation_model_positive_unknown
       );
       
+      // if(p == 1) {
+      //   print(log_forward_p[N_time_for_prediction + 1,]);
+      // }
+      
       //Backward sampling pass
       state_pred[p, N_time_for_prediction] = 
         categorical_rng(softmax(to_vector(log_forward_p[N_time_for_prediction + 1,])));
@@ -370,35 +387,33 @@ generated quantities {
         int t_hmm = t + 1;
         int next_state = state_pred[p, t + 1];
         
-        vector[N_ill_states] log_probs_ill = to_vector(
+        vector[N_states] log_probs;
+        
+        log_probs[ill_states] = to_vector(
           log_forward_p[t_hmm, ill_states] + transition_log_p[X_index[p, t], next_state,]);
           
         if(next_state == s_healthy) {
-          //Include healthy state in the sample. 
-          real lp_healthy = log_forward_p[t_hmm + 1, s_healthy];
-          vector[N_ill_states + 1] log_probs_healthy_ill = append_row(to_vector({lp_healthy}), log_probs_ill);
-          int prediction_raw = categorical_rng(softmax(log_probs_healthy_ill));
-          if(prediction_raw == 1) {
-            state_pred[p, t] = s_healthy;
-          } else {
-            state_pred[p, t] = prediction_raw - 1 + ill_states_shift;
-          }
-          
+          log_probs[s_healthy] = log_forward_p[t_hmm, s_healthy];
+          log_probs[s_severe] = log(0);
         } else if(next_state == s_severe) {
-          //inlucde severe state in the sample
-          real lp_severe = log_forward_p[t_hmm + 1, s_severe];
-          vector[N_ill_states + 1] log_probs_severe_ill = append_row(to_vector({lp_severe}), log_probs_ill);
-          int prediction_raw = categorical_rng(softmax(log_probs_severe_ill));
-          if(prediction_raw == 1) {
-            state_pred[p, t] = s_severe;
-          } else {
-            state_pred[p, t] = prediction_raw - 1 + ill_states_shift;
-          }
+          log_probs[s_healthy] = log(0);
+          log_probs[s_severe] = log_forward_p[t_hmm, s_severe];
         } else {
-          //Sample only ill states as healthy and severe are terminal
-          state_pred[p, t] = categorical_rng(softmax(log_probs_ill)) + ill_states_shift;
+          log_probs[s_healthy] = log(0);
+          log_probs[s_severe] = log(0);
         }
+        
+        // if(p == 1) {
+        //   print(log_probs);
+        // }
+
+        state_pred[p, t] = categorical_rng(softmax(log_probs));
       }
+
+      // if(p == 1) {
+      //   print("Pred: ", state_pred[p,]);
+      // }
+
       
       //Simulate observations from hidden states
       for(t in 1:N_time_for_prediction) {

@@ -1,3 +1,7 @@
+model_color <- "#3993dd"
+data_color <- "#91171f"
+decoration_color <- "#ca5310"
+
 prior_hmm <- list(
   fixed_prior_sd_all = 5,
   observation_sigma_prior_sd = 8,
@@ -91,6 +95,9 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
   o_pos <- data_for_model$o_pos
   o_neg <- data_for_model$o_neg
   o_severe <- data_for_model$o_severe
+  
+  s_severe <- data_for_model$N_ill_states + 2
+  s_healthy <- 1
   # Subset the observed data
   observed_dataset <- data.frame(patient = data_for_model$patients,
                                  o_types = data_for_model$o_types,
@@ -99,9 +106,9 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
                                  viral_load_known = data_for_model$viral_load_known) %>% 
     mutate(viral_load_imputed = case_when(
         viral_load_known ~ viral_load,
-        o_types == o_pos ~ pos_approx + runif(n(), -5, 5),
-        o_types == o_severe ~ severe_approx + runif(n(), -5, 5),
-        o_types == o_neg ~ -5 + runif(n(), -5, 5),
+        o_types == o_pos ~ pos_approx,
+        o_types == o_severe ~ severe_approx,
+        o_types == o_neg ~ -2,
         TRUE ~ NA_real_
     ),
     type = 
@@ -115,7 +122,12 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
   fitted_dataset <- spread_draws(fit, 
                                  state_pred[patient, time], o_type_pred[patient, time], 
                                  viral_load_pred[patient, time]) %>%
-    inner_join(data_wide, by = c("patient" = "NumericID"))
+    inner_join(data_wide, by = c("patient" = "NumericID")) %>%
+    mutate(viral_load_pred_imputed = case_when(
+      state_pred == s_severe ~ severe_approx,
+      state_pred == s_healthy ~ -2,
+      TRUE ~ viral_load_pred
+    ))
 
   N_ill_states <- data_for_model$N_ill_states
   diff_ill_mean <- diff(data_for_model$ill_mean_viral_load)
@@ -148,9 +160,9 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
   if(type == "fitted") {
     summarised_fitted <- fitted_dataset %>%
       crossing(prepared_data$states_data) %>%
-      group_by(patient, time, state, low, high) %>%
+      group_by(patient, patient_label, time, state, low, high) %>%
       summarise(count = sum(state_pred == state)) %>%
-      group_by(patient, time) %>%
+      group_by(patient, patient_label, time) %>%
       mutate(prob = count / sum(count)) %>%
       ungroup()
     
@@ -162,7 +174,7 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
     severe_approx <- max(prepared_data$states_data$low)
     observed_dataset <- observed_dataset %>% mutate(
       viral_load_imputed = if_else(viral_load_imputed > severe_approx, 
-                                   severe_approx + 5 + runif(n(),-5,5),
+                                   severe_approx + 5,
                                    viral_load_imputed))
       
   } else if(type == "predicted") {
@@ -170,7 +182,7 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
     
     
     model_geom1 <- geom_line(data = fitted_dataset %>% filter(.draw %in% fitted_draws), 
-                             aes(x = time, y = viral_load_pred, group = .draw), 
+                             aes(x = time, y = viral_load_pred_imputed, group = .draw), 
                              alpha = 0.3, color = model_color, inherit.aes = FALSE)
     model_geom2 <- NULL
     
@@ -181,9 +193,9 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
   
   observed_dataset %>% ggplot(aes(x = time, y = viral_load_imputed, shape = type, group = patient)) + 
     model_geom1 + model_geom2 +
-    geom_hline(yintercept = 0, color = "green", linetype = "dashed") +
-    geom_hline(yintercept = severe_approx, color = "green", linetype = "dashed") +
-    geom_line() + geom_point() + facet_wrap(~patient_label)
+    geom_hline(yintercept = 0, color = decoration_color, linetype = "dashed") +
+    geom_hline(yintercept = severe_approx, color = decoration_color, linetype = "dashed") +
+    geom_line(color = data_color) + geom_point(color = data_color) + facet_wrap(~patient_label)
   
   
 }

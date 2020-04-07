@@ -81,9 +81,9 @@ SBC
 # }
 
 adapt_delta <- 0.95
-sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 30, N_patients_unknown_load = 5, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = TRUE)}, N_steps = 10, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 1, prior = prior_hmm, use_severe_state = TRUE)}, N_steps = 50, control = list(adapt_delta = adapt_delta))
 
-sbc_res$params %>% plot_sbc_params(binwidth = 5)
+sbc_res$params %>% filter(grepl("beta|sigma", param_name)) %>% plot_sbc_params(binwidth = 10)
 summarise_sbc_diagnostics(sbc_res)
 sbc_res$diagnostics
 ```

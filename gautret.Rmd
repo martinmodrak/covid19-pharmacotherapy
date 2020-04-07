@@ -17,6 +17,7 @@ The paper has been also criticized for its methodology. We agree that many of th
 library(tidyverse)
 library(tidybayes)
 library(rstan)
+library(cmdstanr)
 library(readxl)
 library(here)
 library(cowplot)
@@ -37,10 +38,14 @@ gautret <- readxl::read_excel(here("Gautret_et_al.xlsx"), sheet = "Patients", na
 gautret$Clinical_Status[gautret$Clinical_Status == "LTRI"] <- "LRTI"
 
 
-gautret_long <- gautret %>% 
+gautret_to_long <- function(gautret) {
+  gautret %>% 
   pivot_longer(matches("D[0-6]"), names_to = "Day", values_to = "PCR", names_prefix = "D") %>% 
   filter(!is.na(PCR)) %>%
   mutate(Day = as.integer(Day))
+}
+
+gautret_long <- gautret_to_long(gautret)
 PCR_Neg_Limit <- 35 #From paper
 PCR_Pos_Proxy <- 25 #Arbitrary
 ```
@@ -78,55 +83,59 @@ https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fullt
 #model <- cmdstan_model(stan_file = here::here("hmm.stan"))
 model <- rstan::stan_model(file = here::here("hmm.stan"))
 
-#gautret_long_filtered <- gautret_long %>% filter(!(PCR %in% c("ICU","DEATH")))
-
 o_neg = 1
 o_pos = 2
 o_severe = 3
 
 
-observation_type <- case_when(gautret_long$PCR == "NEG" ~ o_neg,
-                              gautret_long$PCR == "POS" ~ o_pos,
-                              gautret_long$PCR  %in% c("ICU","DEATH") ~ o_severe,
+wide_for_model <- gautret #%>% filter(Source == "Excluded") %>% mutate(NumericID = 1:n())
+long_for_model <- wide_for_model %>% gautret_to_long()
+
+observation_type <- case_when(long_for_model$PCR == "NEG" ~ o_neg,
+                              long_for_model$PCR == "POS" ~ o_pos,
+                              long_for_model$PCR  %in% c("ICU","DEATH") ~ o_severe,
                               TRUE ~ o_pos
                                      )
-
+use_time_effect <- FALSE
 
 data_for_model <- c(prior_hmm, list(
-        N_patients = nrow(gautret),
-        N_obs = nrow(gautret_long),
-        N_fixed = 2,
+        N_patients = nrow(wide_for_model),
+        N_obs = nrow(long_for_model),
+        N_fixed = 2 + use_time_effect,
         N_ill_states = 3,
         central_ill_state = 2,
-        ill_mean_viral_load = c(5,10,15),
-        o_neg = 1,
-        o_pos = 2,
-        o_severe = 3,
+        ill_mean_viral_load = c(3.5,10.5,17.5),
+        o_neg = o_neg,
+        o_pos = o_pos,
+        o_severe = o_severe,
         use_severe_state = TRUE,
         
-        patients = gautret_long$NumericID,
-        times = gautret_long$Day + gautret_long$Days_From_Onset_Imputed + 1,
+        patients = long_for_model$NumericID,
+        times = long_for_model$Day + long_for_model$Days_From_Onset_Imputed + 1,
         o_types = observation_type,
-        viral_load_known = !(gautret_long$PCR %in% c("POS","NEG","ICU","DEATH")),
-        fixed_prior_sd = rep(1, 2),
+        viral_load_known = !(long_for_model$PCR %in% c("POS","NEG","ICU","DEATH")),
+        fixed_prior_sd = rep(1, 2 + use_time_effect),
         generate_predictions = 1
       ))
 
-data_for_model$viral_load = rep(0, nrow(gautret_long))
-data_for_model$viral_load[data_for_model$viral_load_known] <- 
-  as.double(gautret_long$PCR[data_for_model$viral_load_known])
+data_for_model$viral_load = rep(0, nrow(long_for_model))
+data_for_model$viral_load[data_for_model$viral_load_known] <- PCR_Neg_Limit - 
+  as.double(long_for_model$PCR[data_for_model$viral_load_known])
 
 data_for_model$N_time <- max(data_for_model$times)
 
-X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, 2))
+X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, 3))
 for(p in 1:data_for_model$N_patients) {
-  patient_data <- gautret %>% filter(NumericID == p)
+  patient_data <- wide_for_model %>% filter(NumericID == p)
   treatment_times <- (patient_data$Days_From_Onset_Imputed + 1) : data_for_model$N_time
   if(patient_data$Hydroxychloroquine == "Yes") {
     X[p, treatment_times, 1] <- 1
   }
   if(patient_data$Azithromycin == "Yes") {
     X[p, treatment_times, 2] <- 1
+  }
+  if(use_time_effect) {
+    X[p, ,3] <- 0:(data_for_model$N_time - 1)
   }
 }
 
@@ -141,14 +150,14 @@ if(inherits(model, "stanmodel")) {
   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
 }
 
-prepared_data <- prepare_data_for_plotting_hmm(data_for_model, gautret, fit)
-
+prepared_data <- prepare_data_for_plotting_hmm(data_for_model, wide_for_model, fit)
+summary(fit, pars = "beta")$summary
 ```
 
 
 ```{r}
 step_size <- 4
-for(step in 1:(ceiling(nrow(gautret) / step_size))) {
+for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
   ids <- ((step - 1) * step_size + 1) : (step* step_size)
   plot_fitted_patients_hmm(prepared_data, ids) %>% print()
   plot_fitted_patients_hmm(prepared_data, ids, type = "predicted") %>% print()
