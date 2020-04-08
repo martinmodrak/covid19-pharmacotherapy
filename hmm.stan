@@ -376,7 +376,7 @@ model {
         );
         
         per_shift_lp[observation_shift + 1] = 
-          obs_shift_probs[unknown_shift_ids[p], observation_shift + 1] + log_sum_exp(log_forward_p[t_max + 1,]);
+          log(obs_shift_probs[unknown_shift_ids[p], observation_shift + 1]) + log_sum_exp(log_forward_p[t_max + 1,]);
         
       }
       

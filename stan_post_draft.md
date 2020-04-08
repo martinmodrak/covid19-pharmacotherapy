@@ -5,9 +5,9 @@ output: html_document
 
 Recently, a [paper](http://dx.doi.org/10.1016/j.ijantimicag.2020.105949) by Gautret et al. made waves with their strong support of using Hydroxychloroquine (HCQ) and Azithromycin (AZ) for Covid-19 treatment based on a small non-randomized study.  I wondered what would be a good way to analyze the data they reported? I made some attempts and am looking for feedback. 
 
-Note that the paper was criticized on many methodological grounds. Most notably: patients with severe outcome (which were only in the HCQ group) were excluded, the treatment and control groups were recruited at different hospitals and obviously differed even before treatment and also some ethical and procedural considerations, see e.g. the [Pubpeer coments](https://pubpeer.com/publications/B4044A446F35DF81789F6F20F8E0EE) for more. 
+Note that the paper was criticized on many methodological grounds. Most notably: patients with severe outcome (which were only in the HCQ group) were excluded, the treatment and control groups were recruited at different hospitals and obviously differed even before treatment and also some ethical and procedural considerations, see e.g. the nice review by [Darren L. Dahly et al.](https://doi.org/10.5281/zenodo.3724167) or [Pubpeer coments](https://pubpeer.com/publications/B4044A446F35DF81789F6F20F8E0EE) for more. 
 
-In my analysis I am ignoring many of those shortcoming as most can't be solved by statistics. So wanted to note that this brings the analysis further from "practical" territory and more into "excercise in statistics" territory. 
+In my analysis I am ignoring some of those shortcoming as they can't be solved by statistics. But I believe parts of them can be handled by a more custom-tailored analysis. But I wanted to note that the shortocomings I can't address brings the analysis further from "practical" territory and more into "excercise in statistics" territory. 
 
 ## The dataset
 The authors, in a rare and positive move (for a medical paper) provided reasonably detailed patient-level data. The data has a lot of structure:
@@ -26,7 +26,7 @@ This is one way to look at the data I've found helpful:
 
 Each line is a single patient, for the treatment groups, the line starts at first dose. Viral expression is computed as 35 - CT, so that 0 corresponds to the detection limit as used in the paper. The control group contains some patients where the PCR is reported only as positive/negative. For this figure, positive tests were imputed as 10 (CT = 25) plus tiny noise. The excluded cases (including 4 HCQ patients with severe outcomes) are excluded as in the paper.
 
-Also note that the viral load numbers are already on the log scale, with zero being the detection limit which is a somewhat arbitrary value.
+Also note that the viral load numbers are already on the log scale (because of the way rtPCR works), with zero being the detection limit which is a somewhat arbitrary value.
 
 
 ## Previous analyses

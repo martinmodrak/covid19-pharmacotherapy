@@ -182,11 +182,12 @@ model <- rstan::stan_model(file = here::here("hmm.stan"))
 
 ```
 
-Fit the model
+## Model without time effect
 
 ```{r}
 
-data_for_model <- create_data_for_model(gautret %>% filter(Source == "Excluded") %>% mutate(NumericID = 1:n()), prior_hmm, use_time_effect = FALSE, max_observation_shift = 2, N_time = 10)
+wide_for_model <- gautret 
+data_for_model <- create_data_for_model(wide_for_model, prior_hmm, use_time_effect = FALSE, max_observation_shift = 5, template_patients_for_new_prediction = c(1, 30, 32))
 
 
 if(inherits(model, "stanmodel")) {
@@ -199,6 +200,51 @@ if(inherits(model, "stanmodel")) {
 
 prepared_data <- prepare_data_for_plotting_hmm(data_for_model, wide_for_model, fit)
 summary(fit, pars = "beta")$summary
+#summary(fit, pars = "obs_shift_probs")$summary
+```
+
+
+Show model fit. Predicted hidden states are shown as probability over the tiles. Predicted observed trajectories are shown as lines. The dark red line + points are the observed data. Note the _type_ of the observation that tells whether this was a PCR positive/negative or a severe outcome + whether the viral load was known for the observation.
+
+```{r}
+step_size <- 6
+for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
+  ids <- ((step - 1) * step_size + 1) : (step* step_size)
+  plot_fitted_patients_hmm(prepared_data, ids) %>% print()
+  plot_fitted_patients_hmm(prepared_data, ids, type = "predicted") %>% print()
+  
+}
+
+```
+
+Predictions for new patients with the same treatment history as some of the patients included:
+
+```{r}
+plot_fitted_new_patients_hmm(prepared_data)
+```
+
+The vertical line shows start of treatment.
+
+
+
+## Model with a time effect
+
+```{r}
+
+data_for_model_time <- create_data_for_model(wide_for_model, prior_hmm, use_time_effect = TRUE, max_observation_shift = 5, template_patients_for_new_prediction = c(1, 30, 32))
+
+
+if(inherits(model, "stanmodel")) {
+  fit_time <- sampling(model, data = data_for_model_time, control = list(adapt_delta = 0.95))
+  check_hmc_diagnostics(fit)
+} else {
+  cmdstan_fit_time <- model$sample(data = data_for_model_time, adapt_delta = 0.95)
+  fit_time <- rstan::read_stan_csv(cmdstan_fit_time$output_files())
+}
+
+prepared_data_time <- prepare_data_for_plotting_hmm(data_for_model_time, wide_for_model, fit_time)
+summary(fit_time, pars = "beta")$summary
+#summary(fit, pars = "obs_shift_probs")$summary
 ```
 
 
@@ -208,12 +254,20 @@ Show model fit
 step_size <- 4
 for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
   ids <- ((step - 1) * step_size + 1) : (step* step_size)
-  plot_fitted_patients_hmm(prepared_data, ids) %>% print()
-  plot_fitted_patients_hmm(prepared_data, ids, type = "predicted") %>% print()
+  plot_fitted_patients_hmm(prepared_data_time, ids) %>% print()
+  plot_fitted_patients_hmm(prepared_data_time, ids, type = "predicted") %>% print()
   
 }
 
 ```
+
+Predictions for new patients with the same treatment history as some of the patients included:
+
+```{r}
+plot_fitted_new_patients_hmm(prepared_data_time)
+```
+
+The vertical line shows start of treatment.
 
 
 

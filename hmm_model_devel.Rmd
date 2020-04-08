@@ -52,7 +52,7 @@ plot_sim_data_observed_hmm(data)
 data$true
 
 
-summary(fit, pars = "time_shift_probs")$summary
+summary(fit, pars = "obs_shift_probs")$summary
 
 
 ```

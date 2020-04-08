@@ -196,7 +196,7 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
   
 }
 
-plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted") {
+plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted", ncol = 2) {
   
   
   fitted_dataset <- prepared_data$fitted_dataset %>% filter(patient %in% patient_ids) 
@@ -240,13 +240,14 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
     model_geom1 + model_geom2 +
     geom_hline(yintercept = 0, color = decoration_color, linetype = "dashed") +
     geom_hline(yintercept = severe_approx, color = decoration_color, linetype = "dashed") +
-    geom_line(color = data_color) + geom_point(color = data_color) + facet_wrap(~patient_label)
+    geom_line(color = data_color) + geom_point(color = data_color) + facet_wrap(~patient_label, ncol = ncol) +
+    scale_shape_manual(values = c("NEG.unknown" = 0, "POS.unknown" = 1,"POS.known" = 16,"ICU/DEATH.unknown" = 15))
   
   
 }
 
 
-plot_fitted_new_patients_hmm <- function(prepared_data) {
+plot_fitted_new_patients_hmm <- function(prepared_data, ncol = 2) {
   
     
 
@@ -274,7 +275,7 @@ plot_fitted_new_patients_hmm <- function(prepared_data) {
       geom_hline(yintercept = 0, color = decoration_color, linetype = "dashed") +
       geom_hline(yintercept = severe_approx, color = decoration_color, linetype = "dashed") +
       geom_vline(data = treatment_start_data, aes(xintercept = treatment_start), color = decoration_color, linetype = "dashed") +
-      facet_wrap(~patient_label)
+      facet_wrap(~patient_label, ncol = ncol)
   
   
 }
