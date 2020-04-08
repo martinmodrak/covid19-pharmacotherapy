@@ -81,7 +81,7 @@ for(i in 1:5) {
 # }
 
 adapt_delta <- 0.95
-sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 20, N_patients_unknown_load = 0, N_time = 20, N_treatments = 0, N_obs_per_patient = 5, N_ill_states = 1, N_unknown_start = 4, max_unknown_start_index_shift = 8, prior = prior_hmm, use_severe_state = TRUE, time_effect = TRUE)}, N_steps = 20, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 20, N_patients_unknown_load = 0, N_time = 20, N_treatments = 0, N_obs_per_patient = 5, N_ill_states = 1, N_unknown_shift = 4, max_observation_shift = 8, prior = prior_hmm, use_severe_state = TRUE, time_effect = TRUE)}, N_steps = 50, control = list(adapt_delta = adapt_delta))
 
 sbc_res$params %>% plot_sbc_params(binwidth = 10, plot_stat = "mean")
 summarise_sbc_diagnostics(sbc_res)
