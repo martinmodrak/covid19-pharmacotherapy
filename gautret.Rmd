@@ -3,12 +3,6 @@ title: "HCQ + Azithromycin"
 output: html_notebook
 ---
 
-TODO:
-- Figure out SBC issues
-- All missed observations mean < t_high
-- Quadratic term?
-- Unobserved symptom start
-
 First, big thanks to Prof. Raoult and his team who were able to very quickly and transparently report their data. Without their hard work and openness, this reanalysis would not be possible at all.
 
 The paper has been also criticized for its methodology. We agree that many of those criticisms are valid, but will not discuss them here in depth. We believe the proposed modelling approach is able to make a good use of limited case series data and can thus be useful beyond analyzing this particular dataset. 
@@ -80,66 +74,119 @@ https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fullt
 
 
 ```{r}
+create_data_for_model <- function(wide_for_model, prior_hmm, use_time_effect = FALSE, 
+                                  unknown_shift_for_excluded = TRUE, max_observation_shift = 10, N_time = NULL,
+                                  template_patients_for_new_prediction = integer()) {
+  
+  o_neg = 1
+  o_pos = 2
+  o_severe = 3
+  
+  
+  long_for_model <- wide_for_model %>% gautret_to_long()
+  
+  excluded_wide <- wide_for_model %>% filter(Source == "Excluded")
+  
+  observation_type <- case_when(long_for_model$PCR == "NEG" ~ o_neg,
+                                long_for_model$PCR == "POS" ~ o_pos,
+                                long_for_model$PCR  %in% c("ICU","DEATH") ~ o_severe,
+                                TRUE ~ o_pos
+                                       )
+  
+  N_fixed <- 2 + use_time_effect
+  
+  data_for_model <- c(prior_hmm, list(
+          N_patients = nrow(wide_for_model),
+          N_obs = nrow(long_for_model),
+          N_fixed = N_fixed,
+          N_ill_states = 3,
+          central_ill_state = 2,
+          ill_mean_viral_load = c(3.5,10.5,17.5),
+          
+          o_neg = o_neg,
+          o_pos = o_pos,
+          o_severe = o_severe,
+          use_severe_state = TRUE,
+          
+          patients = long_for_model$NumericID,
+          times = long_for_model$Day + long_for_model$Days_From_Onset_Imputed + 1,
+          o_types = observation_type,
+          viral_load_known = !(long_for_model$PCR %in% c("POS","NEG","ICU","DEATH")),
+          fixed_prior_sd = rep(1, N_fixed),
+          generate_predictions = 1,
+          N_new_patient_predictions = length(template_patients_for_new_prediction),
+          template_patients_for_new_prediction = template_patients_for_new_prediction
+        ))
+  
+  data_for_model$viral_load = rep(0, nrow(long_for_model))
+  data_for_model$viral_load[data_for_model$viral_load_known] <- PCR_Neg_Limit - 
+    as.double(long_for_model$PCR[data_for_model$viral_load_known])
+  
+  if(is.null(N_time)) {
+    data_for_model$N_time <- max(data_for_model$times)
+  } else {
+    data_for_model$N_time <- N_time
+  }
+  
+  X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, N_fixed))
+  for(p in 1:data_for_model$N_patients) {
+    patient_data <- wide_for_model %>% filter(NumericID == p)
+    treatment_times <- (patient_data$Days_From_Onset_Imputed + 1) : data_for_model$N_time
+    if(patient_data$Hydroxychloroquine == "Yes") {
+      X[p, treatment_times, 1] <- 1
+    }
+    if(patient_data$Azithromycin == "Yes") {
+      X[p, treatment_times, 2] <- 1
+    }
+    if(use_time_effect) {
+      X[p, ,3] <- 0:(data_for_model$N_time - 1)
+    }
+  }
+  
+  if(unknown_shift_for_excluded) {
+    data_for_model$N_unknown_shift = nrow(excluded_wide)
+    data_for_model$unknown_shift_patients = excluded_wide$NumericID
+    data_for_model$max_observation_shift = max_observation_shift
+    X_unknown_shift = array(0, c(nrow(excluded_wide), max_observation_shift, data_for_model$N_time, data_for_model$N_fixed))
+    for(up in 1:nrow(excluded_wide)) {
+      p <- excluded_wide$NumericID[up]
+      patient_data <- wide_for_model %>% filter(NumericID == p)
+      for(shift in 0:(max_observation_shift - 1)) {
+        treatment_start <- patient_data$Days_From_Onset_Imputed + 1 + shift
+        treatment_times <- treatment_start : data_for_model$N_time
+        if(patient_data$Hydroxychloroquine == "Yes") {
+          X_unknown_shift[up, shift, treatment_times, 1] <- 1
+        }
+        if(patient_data$Azithromycin == "Yes") {
+          X_unknown_shift[up, shift, treatment_times, 2] <- 1
+        }
+        if(use_time_effect) {
+          X_unknown_shift[up, shift, , 3] <- 0:(data_for_model$N_time - 1)
+        }
+   
+      }
+    }
+  } else {
+    data_for_model$N_unknown_shift = 0
+    data_for_model$unknown_shift_patients = integer(0)
+    data_for_model$max_observation_shift = 0
+    X_unknown_shift = array(0, c(0, 0, data_for_model$N_time, data_for_model$N_fixed))
+  }
+  
+  c(data_for_model, transform_predictors_to_unique(X, X_unknown_shift))
+}
+
 #model <- cmdstan_model(stan_file = here::here("hmm.stan"))
 model <- rstan::stan_model(file = here::here("hmm.stan"))
 
-o_neg = 1
-o_pos = 2
-o_severe = 3
 
+```
 
-wide_for_model <- gautret #%>% filter(Source == "Excluded") %>% mutate(NumericID = 1:n())
-long_for_model <- wide_for_model %>% gautret_to_long()
+Fit the model
 
-observation_type <- case_when(long_for_model$PCR == "NEG" ~ o_neg,
-                              long_for_model$PCR == "POS" ~ o_pos,
-                              long_for_model$PCR  %in% c("ICU","DEATH") ~ o_severe,
-                              TRUE ~ o_pos
-                                     )
-use_time_effect <- FALSE
+```{r}
 
-data_for_model <- c(prior_hmm, list(
-        N_patients = nrow(wide_for_model),
-        N_obs = nrow(long_for_model),
-        N_fixed = 2 + use_time_effect,
-        N_ill_states = 3,
-        central_ill_state = 2,
-        ill_mean_viral_load = c(3.5,10.5,17.5),
-        o_neg = o_neg,
-        o_pos = o_pos,
-        o_severe = o_severe,
-        use_severe_state = TRUE,
-        
-        patients = long_for_model$NumericID,
-        times = long_for_model$Day + long_for_model$Days_From_Onset_Imputed + 1,
-        o_types = observation_type,
-        viral_load_known = !(long_for_model$PCR %in% c("POS","NEG","ICU","DEATH")),
-        fixed_prior_sd = rep(1, 2 + use_time_effect),
-        generate_predictions = 1
-      ))
-
-data_for_model$viral_load = rep(0, nrow(long_for_model))
-data_for_model$viral_load[data_for_model$viral_load_known] <- PCR_Neg_Limit - 
-  as.double(long_for_model$PCR[data_for_model$viral_load_known])
-
-data_for_model$N_time <- max(data_for_model$times)
-
-X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, 3))
-for(p in 1:data_for_model$N_patients) {
-  patient_data <- wide_for_model %>% filter(NumericID == p)
-  treatment_times <- (patient_data$Days_From_Onset_Imputed + 1) : data_for_model$N_time
-  if(patient_data$Hydroxychloroquine == "Yes") {
-    X[p, treatment_times, 1] <- 1
-  }
-  if(patient_data$Azithromycin == "Yes") {
-    X[p, treatment_times, 2] <- 1
-  }
-  if(use_time_effect) {
-    X[p, ,3] <- 0:(data_for_model$N_time - 1)
-  }
-}
-
-data_for_model <- c(data_for_model, transform_predictors_to_unique(X))
+data_for_model <- create_data_for_model(gautret %>% filter(Source == "Excluded") %>% mutate(NumericID = 1:n()), prior_hmm, use_time_effect = FALSE, max_observation_shift = 2, N_time = 10)
 
 
 if(inherits(model, "stanmodel")) {
@@ -155,6 +202,8 @@ summary(fit, pars = "beta")$summary
 ```
 
 
+Show model fit
+
 ```{r}
 step_size <- 4
 for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
@@ -169,85 +218,39 @@ for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
 
 
 ```{r}
-#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
-model <- rstan::stan_model(file = here::here("change_point.stan"))
-
-observation_type <- case_when(gautret_long$PCR == "NEG" ~ -1,
-                                     gautret_long$PCR == "POS" ~ 1,
-                                     gautret_long$PCR %in% c("ICU","DEATH") ~ 2,
-                                     TRUE ~ 0
-                                     )
-
-data_for_model <- c(prior, list(
-        N_patients = nrow(gautret),
-        N_obs = nrow(gautret_long),
-        N_treatments = 2,
-        observation_patients = gautret_long$NumericID,
-        observation_time = gautret_long$Day + gautret_long$Days_From_Onset_Imputed,
-        treatment_design_matrix = cbind((gautret_long$Hydroxychloroquine == "Yes") * gautret_long$Day, (gautret_long$Azithromycin == "Yes") * gautret_long$Day),
-        observation_type = observation_type,
-        baseline_recovery_mean = 8,
-        
-        baseline_recovery_shape = 1,
-        observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0)
-      ))
-
-if(inherits(model, "stanmodel")) {
-  fit <- sampling(model, data = data_for_model)
-} else {
-  cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
-  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
-}
-
-prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
-
-```
-
-
-
-```{r}
-
+T#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
+# model <- rstan::stan_model(file = here::here("change_point.stan"))
+# 
+# observation_type <- case_when(gautret_long$PCR == "NEG" ~ -1,
+#                                      gautret_long$PCR == "POS" ~ 1,
+#                                      gautret_long$PCR %in% c("ICU","DEATH") ~ 2,
+#                                      TRUE ~ 0
+#                                      )
+# 
+# data_for_model <- c(prior, list(
+#         N_patients = nrow(gautret),
+#         N_obs = nrow(gautret_long),
+#         N_treatments = 2,
+#         observation_patients = gautret_long$NumericID,
+#         observation_time = gautret_long$Day + gautret_long$Days_From_Onset_Imputed,
+#         treatment_design_matrix = cbind((gautret_long$Hydroxychloroquine == "Yes") * gautret_long$Day, (gautret_long$Azithromycin == "Yes") * gautret_long$Day),
+#         observation_type = observation_type,
+#         baseline_recovery_mean = 8,
+#         
+#         baseline_recovery_shape = 1,
+#         observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0)
+#       ))
+# 
+# if(inherits(model, "stanmodel")) {
+#   fit <- sampling(model, data = data_for_model)
+# } else {
+#   cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
+#   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
+# }
+# 
+# prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
 
 ```
 
-```{r}
-low <- 0
-high <- 1
-curve(low + (high - low) * (1/(1 + exp(-2*x / (high - low) + (high - low) / 2))), from = low - 5, to = high + 5)
-abline(a = 0, b = 1, col = "blue")
-```
 
-
-```{r}
-xx <- 
-head(xx)
-```
-
-
-
-```{r}
-tt <- gautret_long %>% mutate(observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0), cens = case_when(PCR == "NEG" ~ "left",
-                                     gautret_long$PCR %in% c("POS","ICU","DEATH") ~ "interval",
-                                     TRUE ~ "none"
-                                     ),y2 = observations + 2,
-                              time = Day + Days_From_Onset_Imputed)
-brms::make_stancode( observations | cens(cens, y2) ~ 0 + (1 + time || ID), data = tt)
-```
-
-
-
-```{r}
-gautret %>% filter(Source != "Excluded") %>% ggplot(aes(Age)) + geom_histogram(binwidth = 10) + facet_wrap(~Group, ncol = 1)
-```
-
-
-Molin et al. - CI
-
-```{r}
-pos <- 8
-died <- 1
-negative <- 2
-qbeta(c(0.025, 0.975), negative + 1, pos + 1)
-qbeta(c(0.025, 0.975), negative  + 1, pos + died+ 1)
-```
 

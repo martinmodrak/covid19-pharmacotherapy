@@ -1,0 +1,15 @@
+---
+title: "HCQ - other, minor reanalyses"
+output: html_notebook
+---
+
+Molin et al. - computing CI
+
+```{r}
+pos <- 8
+died <- 1
+negative <- 2
+qbeta(c(0.025, 0.975), negative + 1, pos + 1)
+qbeta(c(0.025, 0.975), negative  + 1, pos + died+ 1)
+```
+

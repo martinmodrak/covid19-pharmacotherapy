@@ -1,5 +1,5 @@
 ---
-title: "Model development"
+title: "HMM Model development"
 output: html_notebook
 ---
 
@@ -24,23 +24,23 @@ source("R/hmm_devel_tools.R")
 
 ```{r}
 #system.time({
-model <- cmdstan_model(stan_file = here::here("hmm.stan"))
+#model <- cmdstan_model(stan_file = here::here("hmm.stan"))
 #})
 #system.time({
-#model <- rstan::stan_model(file = here::here("hmm.stan"))
+model <- rstan::stan_model(file = here::here("hmm.stan"))
 #})
 ```
 
 
 
-Single test
+## Test with a single simulation
 
 ```{r}
 adapt_delta <- 0.8
-data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, N_ill_states = 1, prior = prior_hmm, use_severe_state = FALSE)
+data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 20, N_treatments = 0, N_obs_per_patient = 5, N_ill_states = 3, prior = prior_hmm, N_unknown_shift = 4, max_observation_shift = 3, time_effect = TRUE,  use_severe_state = TRUE)
   #sim_hmm(N_patients = 20, N_patients_unknown_load = 20, N_time = 10, N_treatments = 0, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm, use_severe_state = FALSE)
 if(inherits(model, "stanmodel")) {
-  fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta), chains = 1)
+  fit <- sampling(model, data = data$observed, control = list(adapt_delta = adapt_delta))
 } else {
   cmdstan_fit <- model$sample(data = data$observed, adapt_delta = adapt_delta)
   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
@@ -49,20 +49,20 @@ evaluation_summary(fit, data$true)
 
 plot_sim_data_true_hmm(data)
 plot_sim_data_observed_hmm(data)
-
 data$true
 
 
+summary(fit, pars = "time_shift_probs")$summary
+
+
 ```
 
-```{r}
-pairs(fit)
-```
 
+## Prior predictive distribution
 
 ```{r}
 for(i in 1:5) {
-  data <- sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, prior = prior_hmm)
+  data <- sim_hmm(N_patients = 4, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 3, N_unknown_start = 2, max_unknown_start_shift = 3, prior = prior_hmm)
   
   (plot_sim_data_observed_hmm(data) + ggtitle("Observed",i)) %>% print()
   (plot_sim_data_true_hmm(data) + ggtitle("true",i)) %>% print()
@@ -72,7 +72,7 @@ for(i in 1:5) {
 ```
 
 
-SBC
+## SBC
 
 ```{r}
 # cache_dir <- here::here("local_tmp")
@@ -81,13 +81,14 @@ SBC
 # }
 
 adapt_delta <- 0.95
-sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 10, N_patients_unknown_load = 0, N_time = 10, N_treatments = 1, N_obs_per_patient = 4, N_ill_states = 1, prior = prior_hmm, use_severe_state = TRUE)}, N_steps = 50, control = list(adapt_delta = adapt_delta))
+sbc_res <- sbc(model, generator = function() {sim_hmm(N_patients = 20, N_patients_unknown_load = 0, N_time = 20, N_treatments = 0, N_obs_per_patient = 5, N_ill_states = 1, N_unknown_start = 4, max_unknown_start_index_shift = 8, prior = prior_hmm, use_severe_state = TRUE, time_effect = TRUE)}, N_steps = 20, control = list(adapt_delta = adapt_delta))
 
-sbc_res$params %>% filter(grepl("beta|sigma", param_name)) %>% plot_sbc_params(binwidth = 10)
+sbc_res$params %>% plot_sbc_params(binwidth = 10, plot_stat = "mean")
 summarise_sbc_diagnostics(sbc_res)
 sbc_res$diagnostics
 ```
 
+## Detailed look at single fit
 
 ```{r}
 id <- 14
@@ -112,14 +113,4 @@ launch_shinystan_nonblocking(fit)
 ```{r}
 plot_sim_data_observed(data)
 
-```
-
-
-```{r}
-#bayesplot::mcmc_parcoord(fit, regex_pars = c("initial_disease_raw"), np = bayesplot::nuts_params(fit))
-#bayesplot::mcmc_parcoord(fit, regex_pars = c("baseline_slopes_raw"), np = bayesplot::nuts_params(fit))
-
-bayesplot::mcmc_parcoord(fit, pars = c("sigma","baseline_slopes_mean","baseline_slopes_sd"), np = bayesplot::nuts_params(fit))
-
-bayesplot::mcmc_parcoord(fit, pars = c("sigma","baseline_slopes_mean","baseline_slopes_sd","t_high"), np = bayesplot::nuts_params(fit))
 ```

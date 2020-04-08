@@ -7,7 +7,7 @@ prior_hmm <- list(
   observation_sigma_prior_sd = 8,
   transition_thresholds_prior_sd = 5,
   state_intercept_prior_sd = 3,
-  time_effect_prior_sd = 0.3
+  time_effect_prior_sd = 1#0.3
 )
 
 inv_logit <- function(a) {
@@ -35,7 +35,7 @@ ordered_logistic_probs <- function(lambda, c) {
   res
 }
 
-transform_predictors_to_unique <- function(X) {
+transform_predictors_to_unique <- function(X, X_unknown_shift) {
   if(typeof(X) != "double") {
     stop("has to be double")
   }
@@ -46,8 +46,12 @@ transform_predictors_to_unique <- function(X) {
   N_patients <- dim(X)[1]
   N_time <- dim(X)[2]
   N_fixed <- dim(X)[3]
-  
+
+  N_unknown_start <- dim(X_unknown_shift)[1]
+  maX_unknown_shift_shift <- dim(X_unknown_shift)[2]
+    
   X_index <- array(-1, c(N_patients, N_time))
+  X_unknown_shift_index <- array(-1, c(N_unknown_start, maX_unknown_shift_shift, N_time))
   
   X_dict <- list()
   next_id <- 1
@@ -64,6 +68,22 @@ transform_predictors_to_unique <- function(X) {
     }
   }
   
+  for(u in 1:N_unknown_start) {
+    for(shift in 1:maX_unknown_shift_shift) {
+      for(t in 1:N_time) {
+        str_index <- paste0(X_unknown_shift[u, shift,t,], collapse = "__x__")
+        if(!is.null(X_dict[[str_index]])) {
+          X_unknown_shift_index[u, shift, t] <- X_dict[[str_index]]$id
+        } else {
+          X_unknown_shift_index[u, shift, t] <- next_id
+          X_dict[[str_index]] <- list(id = next_id, value = X_unknown_shift[u, shift,t,])
+          next_id <- next_id + 1
+        }
+      }
+    }
+  }
+      
+  
   N_predictor_sets <- next_id - 1
   X_new <- array(NA_real_, c(N_predictor_sets, N_fixed))
   for(n in names(X_dict)) {
@@ -77,7 +97,8 @@ transform_predictors_to_unique <- function(X) {
   list(
     N_predictor_sets =N_predictor_sets,
     X = X_new,
-    X_index = X_index
+    X_index = X_index,
+    X_unknown_shift_index = X_unknown_shift_index
   )
 }
 
@@ -90,7 +111,8 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
   
   data_wide <- data_wide %>% mutate(patient_label = paste0(ID, " - ", case_when(Hydroxychloroquine == "No" ~ "Control",
                                                                                 Azithromycin == "No" ~ "HCQ",
-                                                                                TRUE ~ "HCQ + AZ")))
+                                                                                TRUE ~ "HCQ + AZ")),
+                                    treated = Hydroxychloroquine == "Yes" | Azithromycin == "Yes")
 
   o_pos <- data_for_model$o_pos
   o_neg <- data_for_model$o_neg
@@ -119,16 +141,28 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
     inner_join(data_wide, by = c("patient" = "NumericID")) %>%
     arrange(time) 
 
+  observation_shifts <- spread_draws(fit, observation_shift_pred[unkown_shift_id]) %>%
+    select(-.chain, -.iteration) %>% 
+    mutate(patient = data_for_model$unknown_shift_patients[unkown_shift_id],
+           observation_shift_pred = as.integer(observation_shift_pred))
+  
+
   fitted_dataset <- spread_draws(fit, 
                                  state_pred[patient, time], o_type_pred[patient, time], 
                                  viral_load_pred[patient, time]) %>%
     inner_join(data_wide, by = c("patient" = "NumericID")) %>%
+    ungroup() %>%
+    left_join(observation_shifts, by = c("patient" = "patient", ".draw" = ".draw")) %>%
+    ungroup() %>%
     mutate(viral_load_pred_imputed = case_when(
       state_pred == s_severe ~ severe_approx,
       state_pred == s_healthy ~ -2,
       TRUE ~ viral_load_pred
-    ))
+    )) %>% 
+    mutate(time = if_else(!is.na(observation_shift_pred), time - observation_shift_pred, time))
 
+  ## Info about states
+  
   N_ill_states <- data_for_model$N_ill_states
   diff_ill_mean <- diff(data_for_model$ill_mean_viral_load)
   inner_boundaries <- data_for_model$ill_mean_viral_load[1:(N_ill_states - 1)] + 
@@ -141,12 +175,23 @@ prepare_data_for_plotting_hmm <- function(data_for_model, data_wide, fit) {
                             low = state_boundaries[1:(N_ill_states + 2)], 
                             high = state_boundaries[2:(N_ill_states + 3)])
     
+  ## Predictions for new patients
+  data_wide_new_patients <- data_wide %>% 
+    filter(NumericID %in% data_for_model$template_patients_for_new_prediction) 
+  
+  
+  new_patients_dataset <- spread_draws(fit, new_patient_state_pred[new_patient_id, time])  %>%
+    mutate(patient_template = data_for_model$template_patients_for_new_prediction[new_patient_id]) %>%
+    inner_join(data_wide_new_patients, by = c("patient_template" = "NumericID"))
+  
+  
   list(
     observed_dataset = observed_dataset,
     fitted_dataset = fitted_dataset,
     max_time = data_for_model$N_time,
     severe_approx = severe_approx,
-    states_data = states_data
+    states_data = states_data,
+    new_patients_dataset = new_patients_dataset
   )
   
 }
@@ -200,3 +245,36 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
   
 }
 
+
+plot_fitted_new_patients_hmm <- function(prepared_data) {
+  
+    
+
+    summarised_fitted <- prepared_data$new_patients_dataset %>%
+      crossing(prepared_data$states_data) %>%
+      group_by(patient_template, patient_label, time, state, low, high) %>%
+      summarise(count = sum(new_patient_state_pred == state)) %>%
+      group_by(patient_template, patient_label, time) %>%
+      mutate(prob = count / sum(count)) %>%
+      ungroup()
+    
+    severe_approx <- max(prepared_data$states_data$low)
+
+    treatment_start_data <- prepared_data$new_patients_dataset %>% 
+      ungroup() %>%
+      select(patient_template, patient_label, treated, Days_From_Onset_Imputed) %>%
+      distinct() %>% filter(treated) %>%
+      mutate(treatment_start = Days_From_Onset_Imputed)
+    
+    #print(head(treatment_start_data))
+    
+    summarised_fitted %>% 
+      ggplot(aes(xmin = time - 0.5, xmax = time + 0.5, ymin = low, ymax = high, fill = prob)) + 
+      geom_rect() + scale_fill_gradient(low = "white", high = model_color, limits = c(0,1)) +
+      geom_hline(yintercept = 0, color = decoration_color, linetype = "dashed") +
+      geom_hline(yintercept = severe_approx, color = decoration_color, linetype = "dashed") +
+      geom_vline(data = treatment_start_data, aes(xintercept = treatment_start), color = decoration_color, linetype = "dashed") +
+      facet_wrap(~patient_label)
+  
+  
+}
