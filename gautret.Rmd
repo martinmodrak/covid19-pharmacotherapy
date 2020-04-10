@@ -15,40 +15,31 @@ library(cmdstanr)
 library(readxl)
 library(here)
 library(cowplot)
+library(bayesplot)
 theme_set(theme_cowplot())
 
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
 
 source("R/hmm_tools.R")
-
+source("R/hmm_checks.R")
+source("R/models_tools.R")
+source("R/model_defs.R")
+source("R/load_data.R")
 ```
 
 ```{r}
-gautret <- readxl::read_excel(here("Gautret_et_al.xlsx"), sheet = "Patients", na = c("ND","Unknown", "NF")) %>% mutate(Group = if_else(Hydroxychloroquine == "No", "Control", if_else(Azithromycin == "No", "Hydroxychloroquine", "Hydroxychloroquine + Azithromycin")), 
-               NumericID = 1:n(),
-               Days_From_Onset_Imputed = if_else(is.na(Days_From_Onset) | Days_From_Onset == "-", as.integer(0), as.integer(Days_From_Onset)))
 
-gautret$Clinical_Status[gautret$Clinical_Status == "LTRI"] <- "LRTI"
-
-
-gautret_to_long <- function(gautret) {
-  gautret %>% 
-  pivot_longer(matches("D[0-6]"), names_to = "Day", values_to = "PCR", names_prefix = "D") %>% 
-  filter(!is.na(PCR)) %>%
-  mutate(Day = as.integer(Day))
-}
+gautret <- load_gautret_data()
 
 gautret_long <- gautret_to_long(gautret)
-PCR_Neg_Limit <- 35 #From paper
-PCR_Pos_Proxy <- 25 #Arbitrary
 ```
 
 Most notably both HCQ and HCQ+AZ group started medication (and hence monitoring) at later time than the control group. This could partially account for the differences observed, nevertheless both HCQ and HCQ+AZ groups show an overall slow decline in viral expression that is not seen in the control group.
 
-```{r, fig.cap="The per patient data as reported by Gautret et al. Each line is a single patient, for the treatment groups, the line starts at first dose. Viral expression is computed as 35 - CT, so that 0 corresponds to the detection limit. The control group contains some patients where the PCR is reported only as positive/negative. For this figure, positive tests were imputed as 10."}
+```{r, fig.cap="The per patient data as reported by Gautret et al. Each line is a single patient, for the treatment groups, the line starts at first dose. Viral expression is computed as 35 - CT, so that 0 corresponds to the detection limit. The control group contains some patients where the PCR is reported only as positive/negative. For this figure, positive tests were imputed as 10.", fig.height=6, fig.width = 7}
 
-gautret_long %>% filter(Source != "Excluded") %>% 
+gautret_long %>% filter(Source != "NoFollowup") %>% 
   mutate(Viral_Expression = PCR_Neg_Limit - case_when(PCR == "POS" ~ rnorm(n(), PCR_Pos_Proxy, 2),
                                                 PCR == "NEG" ~ PCR_Neg_Limit,
                                                 PCR == "ND" ~ NA_real_,
@@ -58,148 +49,38 @@ gautret_long %>% filter(Source != "Excluded") %>%
   filter(!is.na(Viral_Expression)) %>%
   ggplot(aes(x = Time, y = Viral_Expression, color = Clinical_Status, group = ID)) + 
   geom_point(alpha = 0.8) + geom_line(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") + facet_wrap(~Group, ncol = 2) +
-  scale_x_continuous("Days from symptoms onset") + scale_y_continuous("Viral expression")
+  geom_hline(yintercept = 0, linetype = "dashed") + facet_wrap(~Group, ncol = 1) +
+  scale_x_continuous("Days from symptoms onset") + scale_y_continuous("Viral expression (35 - CT)")
 ```
 
 
 Also the original analysis excludes six patients who were lost to followup, four of which had severe outcome (one death, three transported to ICU). None of the patients int control group has been reported to have such an outcome.
 
 ```{r}
-gautret %>% filter(Source == "Excluded") %>% select(ID, Clinical_Status, Hydroxychloroquine, Azithromycin, matches("D[0-6]"))
+gautret %>% filter(Source == "NoFollowup") %>% select(ID, Clinical_Status, Hydroxychloroquine, Azithromycin, matches("D[0-6]"))
 ```
 
 
 https://www.thelancet.com/journals/laninf/article/PIIS1473-3099(20)30232-2/fulltext Could maybe serve as an additional justification for the model.
 
+## Main model
+
+The model settings are:
 
 ```{r}
-create_data_for_model <- function(wide_for_model, prior_hmm, use_time_effect = FALSE, 
-                                  unknown_shift_for_excluded = TRUE, max_observation_shift = 10, N_time = NULL,
-                                  template_patients_for_new_prediction = integer()) {
-  
-  o_neg = 1
-  o_pos = 2
-  o_severe = 3
-  
-  
-  long_for_model <- wide_for_model %>% gautret_to_long()
-  
-  excluded_wide <- wide_for_model %>% filter(Source == "Excluded")
-  
-  observation_type <- case_when(long_for_model$PCR == "NEG" ~ o_neg,
-                                long_for_model$PCR == "POS" ~ o_pos,
-                                long_for_model$PCR  %in% c("ICU","DEATH") ~ o_severe,
-                                TRUE ~ o_pos
-                                       )
-  
-  N_fixed <- 2 + use_time_effect
-  
-  data_for_model <- c(prior_hmm, list(
-          N_patients = nrow(wide_for_model),
-          N_obs = nrow(long_for_model),
-          N_fixed = N_fixed,
-          N_ill_states = 3,
-          central_ill_state = 2,
-          ill_mean_viral_load = c(3.5,10.5,17.5),
-          
-          o_neg = o_neg,
-          o_pos = o_pos,
-          o_severe = o_severe,
-          use_severe_state = TRUE,
-          
-          patients = long_for_model$NumericID,
-          times = long_for_model$Day + long_for_model$Days_From_Onset_Imputed + 1,
-          o_types = observation_type,
-          viral_load_known = !(long_for_model$PCR %in% c("POS","NEG","ICU","DEATH")),
-          fixed_prior_sd = rep(1, N_fixed),
-          generate_predictions = 1,
-          N_new_patient_predictions = length(template_patients_for_new_prediction),
-          template_patients_for_new_prediction = template_patients_for_new_prediction
-        ))
-  
-  data_for_model$viral_load = rep(0, nrow(long_for_model))
-  data_for_model$viral_load[data_for_model$viral_load_known] <- PCR_Neg_Limit - 
-    as.double(long_for_model$PCR[data_for_model$viral_load_known])
-  
-  if(is.null(N_time)) {
-    data_for_model$N_time <- max(data_for_model$times)
-  } else {
-    data_for_model$N_time <- N_time
-  }
-  
-  X <- array(0, c(data_for_model$N_patients, data_for_model$N_time, N_fixed))
-  for(p in 1:data_for_model$N_patients) {
-    patient_data <- wide_for_model %>% filter(NumericID == p)
-    treatment_times <- (patient_data$Days_From_Onset_Imputed + 1) : data_for_model$N_time
-    if(patient_data$Hydroxychloroquine == "Yes") {
-      X[p, treatment_times, 1] <- 1
-    }
-    if(patient_data$Azithromycin == "Yes") {
-      X[p, treatment_times, 2] <- 1
-    }
-    if(use_time_effect) {
-      X[p, ,3] <- 0:(data_for_model$N_time - 1)
-    }
-  }
-  
-  if(unknown_shift_for_excluded) {
-    data_for_model$N_unknown_shift = nrow(excluded_wide)
-    data_for_model$unknown_shift_patients = excluded_wide$NumericID
-    data_for_model$max_observation_shift = max_observation_shift
-    X_unknown_shift = array(0, c(nrow(excluded_wide), max_observation_shift, data_for_model$N_time, data_for_model$N_fixed))
-    for(up in 1:nrow(excluded_wide)) {
-      p <- excluded_wide$NumericID[up]
-      patient_data <- wide_for_model %>% filter(NumericID == p)
-      for(shift in 0:(max_observation_shift - 1)) {
-        treatment_start <- patient_data$Days_From_Onset_Imputed + 1 + shift
-        treatment_times <- treatment_start : data_for_model$N_time
-        if(patient_data$Hydroxychloroquine == "Yes") {
-          X_unknown_shift[up, shift, treatment_times, 1] <- 1
-        }
-        if(patient_data$Azithromycin == "Yes") {
-          X_unknown_shift[up, shift, treatment_times, 2] <- 1
-        }
-        if(use_time_effect) {
-          X_unknown_shift[up, shift, , 3] <- 0:(data_for_model$N_time - 1)
-        }
-   
-      }
-    }
-  } else {
-    data_for_model$N_unknown_shift = 0
-    data_for_model$unknown_shift_patients = integer(0)
-    data_for_model$max_observation_shift = 0
-    X_unknown_shift = array(0, c(0, 0, data_for_model$N_time, data_for_model$N_fixed))
-  }
-  
-  c(data_for_model, transform_predictors_to_unique(X, X_unknown_shift))
-}
-
 #model <- cmdstan_model(stan_file = here::here("hmm.stan"))
 model <- rstan::stan_model(file = here::here("hmm.stan"))
-
-
+main_model_def <- all_model_defs$hmm_5_default_symptom_onset_estimate
+main_model_def %>% as.data.frame()
 ```
 
-## Model without time effect
 
 ```{r}
 
-wide_for_model <- gautret 
-data_for_model <- create_data_for_model(wide_for_model, prior_hmm, use_time_effect = FALSE, max_observation_shift = 5, template_patients_for_new_prediction = c(1, 30, 32))
+fit_list <- fit_model(model, gautret, main_model_def)
 
-
-if(inherits(model, "stanmodel")) {
-  fit <- sampling(model, data = data_for_model, control = list(adapt_delta = 0.95))
-  check_hmc_diagnostics(fit)
-} else {
-  cmdstan_fit <- model$sample(data = data_for_model, adapt_delta = 0.95)
-  fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
-}
-
-prepared_data <- prepare_data_for_plotting_hmm(data_for_model, wide_for_model, fit)
-summary(fit, pars = "beta")$summary
+prepared_data <- prepare_data_for_analysis_hmm(fit_list)
+summary(fit_list$fit, pars = "beta")$summary
 #summary(fit, pars = "obs_shift_probs")$summary
 ```
 
@@ -208,7 +89,7 @@ Show model fit. Predicted hidden states are shown as probability over the tiles.
 
 ```{r}
 step_size <- 6
-for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
+for(step in 1:(ceiling(nrow(fit_list$data_wide) / step_size))) {
   ids <- ((step - 1) * step_size + 1) : (step* step_size)
   plot_fitted_patients_hmm(prepared_data, ids) %>% print()
   plot_fitted_patients_hmm(prepared_data, ids, type = "predicted") %>% print()
@@ -217,94 +98,49 @@ for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
 
 ```
 
-Predictions for new patients with the same treatment history as some of the patients included:
+Predictions for new patients that would be treated from the first day. Initial state is randomly chosen among the ill states.
 
 ```{r}
 plot_fitted_new_patients_hmm(prepared_data)
 ```
 
-The vertical line shows start of treatment.
 
 
 
-## Model with a time effect
+PP checks
 
 ```{r}
-
-data_for_model_time <- create_data_for_model(wide_for_model, prior_hmm, use_time_effect = TRUE, max_observation_shift = 5, template_patients_for_new_prediction = c(1, 30, 32))
-
-
-if(inherits(model, "stanmodel")) {
-  fit_time <- sampling(model, data = data_for_model_time, control = list(adapt_delta = 0.95))
-  check_hmc_diagnostics(fit)
-} else {
-  cmdstan_fit_time <- model$sample(data = data_for_model_time, adapt_delta = 0.95)
-  fit_time <- rstan::read_stan_csv(cmdstan_fit_time$output_files())
-}
-
-prepared_data_time <- prepare_data_for_plotting_hmm(data_for_model_time, wide_for_model, fit_time)
-summary(fit_time, pars = "beta")$summary
-#summary(fit, pars = "obs_shift_probs")$summary
+pp_check_data <- prepare_data_for_pp_checks_hmm(fit_list) 
 ```
 
-
-Show model fit
-
 ```{r}
-step_size <- 4
-for(step in 1:(ceiling(nrow(wide_for_model) / step_size))) {
-  ids <- ((step - 1) * step_size + 1) : (step* step_size)
-  plot_fitted_patients_hmm(prepared_data_time, ids) %>% print()
-  plot_fitted_patients_hmm(prepared_data_time, ids, type = "predicted") %>% print()
-  
-}
+pp_check_viral_load_hmm(pp_check_data, n_draws = 50, fun = "dens_overlay")
+pp_check_viral_load_hmm(pp_check_data %>% filter_pp_check_data_hmm(Hydroxychloroquine == "Yes"), n_draws = 50, fun = "dens_overlay")
+pp_check_viral_load_hmm(pp_check_data %>% filter_pp_check_data_hmm(Hydroxychloroquine == "No"), n_draws = 50, fun = "dens_overlay")
+pp_check_viral_load_hmm(pp_check_data %>% filter_pp_check_data_hmm(Azithromycin == "Yes"), n_draws = 50, fun = "dens_overlay")
 
 ```
 
-Predictions for new patients with the same treatment history as some of the patients included:
-
 ```{r}
-plot_fitted_new_patients_hmm(prepared_data_time)
+pp_check_o_neg_hmm(pp_check_data, fun = "stat", binwidth = 0.01)
+pp_check_o_neg_hmm(pp_check_data, fun = "stat_grouped", binwidth = 0.03, group = "GroupShort")
 ```
-
-The vertical line shows start of treatment.
-
 
 
 ```{r}
-T#model <- cmdstan_model(stan_file = here::here("change_point.stan"))
-# model <- rstan::stan_model(file = here::here("change_point.stan"))
-# 
-# observation_type <- case_when(gautret_long$PCR == "NEG" ~ -1,
-#                                      gautret_long$PCR == "POS" ~ 1,
-#                                      gautret_long$PCR %in% c("ICU","DEATH") ~ 2,
-#                                      TRUE ~ 0
-#                                      )
-# 
-# data_for_model <- c(prior, list(
-#         N_patients = nrow(gautret),
-#         N_obs = nrow(gautret_long),
-#         N_treatments = 2,
-#         observation_patients = gautret_long$NumericID,
-#         observation_time = gautret_long$Day + gautret_long$Days_From_Onset_Imputed,
-#         treatment_design_matrix = cbind((gautret_long$Hydroxychloroquine == "Yes") * gautret_long$Day, (gautret_long$Azithromycin == "Yes") * gautret_long$Day),
-#         observation_type = observation_type,
-#         baseline_recovery_mean = 8,
-#         
-#         baseline_recovery_shape = 1,
-#         observations = if_else(observation_type == 0, PCR_Neg_Limit - as.double(gautret_long$PCR), 0)
-#       ))
-# 
-# if(inherits(model, "stanmodel")) {
-#   fit <- sampling(model, data = data_for_model)
-# } else {
-#   cmdstan_fit <- model$sample(data = data_for_model, adapt_delta)
-#   fit <- rstan::read_stan_csv(cmdstan_fit$output_files())
-# }
-# 
-# prepared_data <- prepare_data_for_plotting(data_for_model, gautret, fit)
+pp_check_o_pos_hmm(pp_check_data, fun = "stat", binwidth = 0.01)
+pp_check_o_pos_hmm(pp_check_data, fun = "stat_grouped", binwidth = 0.03, group = "GroupShort")
+```
+
+
+## Multiverse
+
+```{r}
+all_fits <- fit_all_models(model, wide_for_model)
 
 ```
+
+
 
 
 

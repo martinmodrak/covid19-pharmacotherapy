@@ -44,27 +44,40 @@ functions {
     
     return observation_model_positive_unknown;
   }
+  
+  // Compute a single transition matrix
+  // The indices are [to_state, from_state] 
+  // where to_state range 1 .. N_states and from_state 1 .. N_ill_states
+  matrix compute_transition_log_p(
+    int N_states, int N_ill_states, int N_fixed, row_vector X,
+    vector beta, vector transition_thresholds, vector state_intercepts
+  ) {
+      matrix[N_states, N_ill_states] transition_log_p;
+      real linpred = 0;
+      if(N_fixed > 0) {
+        linpred += X * beta;
+      }
+      for(s_index in 1:N_ill_states) {
+        transition_log_p[, s_index] = ordered_logistic_log_probs(state_intercepts[s_index] + linpred, transition_thresholds);
+      }
+      return transition_log_p;
+  }
 
   //Precompute all the transition matrices
   //The indices are [predictor_set, to_state, from_state] 
   //where to_state range 1 .. N_states and from_state 1 .. N_ill_states
-  matrix[] compute_transition_log_p(
+  matrix[] compute_all_transition_log_p(
     int N_states, int N_predictor_sets, int N_ill_states, int N_fixed, matrix X,
     vector beta, vector transition_thresholds, vector state_intercepts
   ) {
     //transitions are only possible _from_ ill states
-    matrix[N_states, N_ill_states] transition_log_p[N_predictor_sets]; 
+    matrix[N_states, N_ill_states] all_transition_log_p[N_predictor_sets]; 
   
     for(x_id in 1:N_predictor_sets) {
-      real linpred = 0;
-      if(N_fixed > 0) {
-        linpred += X[x_id, ] * beta;
-      }
-      for(s_index in 1:N_ill_states) {
-        transition_log_p[x_id,, s_index] = ordered_logistic_log_probs(state_intercepts[s_index] + linpred, transition_thresholds);
-      }
+      all_transition_log_p[x_id] = compute_transition_log_p(N_states, N_ill_states, N_fixed,
+        X[x_id,], beta, transition_thresholds, state_intercepts);
     }
-    return transition_log_p;
+    return all_transition_log_p;
   }
   
   matrix forward_pass(
@@ -78,7 +91,7 @@ functions {
     int o_neg, int o_pos, int o_severe,
     int[] viral_load_known, vector viral_load,
     real log1m_specificity, real log_sensitivity, real observation_sigma,
-    matrix[] transition_log_p, 
+    matrix[] all_transition_log_p, 
     row_vector observation_model_negative, row_vector observation_model_positive_unknown
   ) {
     int N_ill_states = size(ill_states);
@@ -108,7 +121,7 @@ functions {
       //Transitions - only allowed from ill states
       for(s_to in 1:N_states) {
         for(s_from in ill_states) {
-          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + transition_log_p[X_index_patient[t], s_to, s_from - ill_states_shift];
+          acc_transition[s_from - ill_states_shift] = log_forward_p[t_hmm - 1, s_from] + all_transition_log_p[X_index_patient[t], s_to, s_from - ill_states_shift];
         }
         if(s_to == s_healthy || (use_severe_state && s_to == s_severe)) {
           //Add the probability of already being in one of the "terminal" states
@@ -128,7 +141,7 @@ functions {
         } else if(o_types[o_id] == o_neg) {
           log_forward_p[t_hmm, ] += observation_model_negative;
         } else if(o_types[o_id] == o_pos) {
-          if(viral_load_known[o_id]) {
+          if(viral_load_known[o_id] && N_ill_states > 1) {
             vector[N_ill_states] per_state_lp;
             if(use_severe_state) {
               log_forward_p[t_hmm, s_severe] = log(0);
@@ -208,7 +221,7 @@ data {
   // predictor sequences for each time point and potential shift due to unknown symptom onset,
   // As it is easier to just do the work in R.
   // (once again indexing the small X array)
-  int<lower=1,upper=N_predictor_sets> X_unknown_shift_index[N_unknown_shift, max_observation_shift, N_time];
+  int<lower=1,upper=N_predictor_sets> X_unknown_shift_index[N_unknown_shift, N_unknown_shift > 0 ? max_observation_shift + 1 : 0, N_time];
   
   // The unique predictor sets among all patient x time points.
   matrix[N_predictor_sets, N_fixed] X;
@@ -219,9 +232,10 @@ data {
   real<lower=0> transition_thresholds_prior_sd;
   real<lower=0> state_intercept_prior_sd;
 
+  // Parameters for prediction
   int<lower=0, upper=1> generate_predictions;
-  int<lower=0> N_new_patient_predictions;
-  int<lower=1, upper = N_patients> template_patients_for_new_prediction[N_new_patient_predictions];
+  int<lower=0> N_new_predictions;
+  matrix[N_time, N_fixed] X_new_prediction[N_new_predictions];
 }
 
 transformed data {
@@ -268,7 +282,7 @@ transformed data {
   
   for(up in 1:N_unknown_shift) {
     unknown_shift_ids[unknown_shift_patients[up]] = up;
-    if(patient_max_time[unknown_shift_patients[up]] + max_observation_shift - 1 > N_time) {
+    if(patient_max_time[unknown_shift_patients[up]] + max_observation_shift > N_time) {
       reject("N_time must be large enough to incorporate latest observation from each patient with unknown start and the time shift");
     }
   }
@@ -295,7 +309,7 @@ parameters {
   real<lower=0> observation_sigma;
  
   // Marginalizing the unknown start times
-  simplex[max_observation_shift] obs_shift_probs[N_unknown_shift]; 
+  simplex[max_observation_shift + 1] obs_shift_probs[N_unknown_shift]; 
 }
 
 transformed parameters {
@@ -314,6 +328,7 @@ model {
   real log_sensitivity = log(sensitivity);
   real log1m_sensitivity = log1m(sensitivity);
   
+  
   //Init constant parts of the observation model
   row_vector[N_states] observation_model_negative = 
     init_observation_model_negative(N_states, ill_states, s_healthy, s_severe, use_severe_state, 
@@ -324,8 +339,8 @@ model {
   
   
   //Precompute all the transition matrices for all unique predictor sets
-  matrix[N_states, N_ill_states] transition_log_p[N_predictor_sets] = 
-    compute_transition_log_p(
+  matrix[N_states, N_ill_states] all_transition_log_p[N_predictor_sets] = 
+    compute_all_transition_log_p(
       N_states, N_predictor_sets, N_ill_states, N_fixed, X,
       beta, transition_thresholds, state_intercepts
     );
@@ -348,15 +363,15 @@ model {
           o_neg, o_pos, o_severe,
           viral_load_known, viral_load,
           log1m_specificity, log_sensitivity, observation_sigma,
-          transition_log_p, 
+          all_transition_log_p, 
           observation_model_negative, observation_model_positive_unknown
       );
       
       target += log_sum_exp(log_forward_p[t_max + 1,]);
     } else {
       // Unknown start time - marginalize over all possible start times
-      vector[max_observation_shift] per_shift_lp;
-      for(observation_shift in 0:(max_observation_shift - 1)) {
+      vector[max_observation_shift + 1] per_shift_lp;
+      for(observation_shift in 0:max_observation_shift) {
         int t_max = patient_max_time[p] + observation_shift;
         int X_index_patient[N_time] = X_unknown_shift_index[unknown_shift_ids[p], observation_shift + 1, ];
         matrix[t_max + 1, N_states] log_forward_p =
@@ -371,7 +386,7 @@ model {
             o_neg, o_pos, o_severe,
             viral_load_known, viral_load,
             log1m_specificity, log_sensitivity, observation_sigma,
-            transition_log_p, 
+            all_transition_log_p, 
             observation_model_negative, observation_model_positive_unknown
         );
         
@@ -392,8 +407,9 @@ model {
 }
 
 generated quantities {
-  int<lower=0, upper=max_observation_shift - 1> observation_shift_pred[N_unknown_shift];
-  int<lower=1, upper=N_states> new_patient_state_pred[N_new_patient_predictions, N_time_for_prediction];
+  int<lower=0, upper=max_observation_shift> observation_shift_pred[N_unknown_shift];
+  int<lower=1, upper=N_states> state_pred_new[N_new_predictions, N_time_for_prediction];
+  real log_p_new[N_new_predictions, N_time_for_prediction, N_states];
   int<lower=1, upper=N_states> state_pred[N_patients, N_time_for_prediction];
   int<lower=1> o_type_pred[N_patients, N_time_for_prediction];
   matrix[N_patients, N_time_for_prediction] viral_load_pred;
@@ -401,7 +417,7 @@ generated quantities {
   for(up in 1:N_unknown_shift) {
     observation_shift_pred[up] = categorical_rng(obs_shift_probs[up]) - 1;
   }
-  
+
   if(generate_predictions) {
     real log_specificity = log(specificity);
     real log1m_specificity = log1m(specificity);
@@ -418,8 +434,8 @@ generated quantities {
     
     
     //Precompute all the transition matrices
-    matrix[N_states, N_ill_states] transition_log_p[N_predictor_sets] = 
-      compute_transition_log_p(
+    matrix[N_states, N_ill_states] all_transition_log_p[N_predictor_sets] = 
+      compute_all_transition_log_p(
         N_states, N_predictor_sets, N_ill_states, N_fixed, X,
         beta, transition_thresholds, state_intercepts
       );
@@ -450,7 +466,7 @@ generated quantities {
               o_neg, o_pos, o_severe,
               viral_load_known, viral_load,
               log1m_specificity, log_sensitivity, observation_sigma,
-              transition_log_p, 
+              all_transition_log_p, 
               observation_model_negative, observation_model_positive_unknown
           );
           
@@ -467,17 +483,21 @@ generated quantities {
             vector[N_states] log_probs;
             
             log_probs[ill_states] = to_vector(
-              log_forward_p[t_hmm, ill_states] + transition_log_p[X_index[p, t], next_state,]);
+              log_forward_p[t_hmm, ill_states] + all_transition_log_p[X_index[p, t], next_state,]);
               
             if(next_state == s_healthy) {
               log_probs[s_healthy] = log_forward_p[t_hmm, s_healthy];
-              log_probs[s_severe] = log(0);
+              if(use_severe_state) {
+                log_probs[s_severe] = log(0);
+              }
             } else if(next_state == s_severe) {
               log_probs[s_healthy] = log(0);
               log_probs[s_severe] = log_forward_p[t_hmm, s_severe];
             } else {
               log_probs[s_healthy] = log(0);
-              log_probs[s_severe] = log(0);
+              if(use_severe_state) {
+                log_probs[s_severe] = log(0);
+              }
             }
             
             state_pred[p, t] = categorical_rng(softmax(log_probs));
@@ -519,14 +539,39 @@ generated quantities {
       } //cycle over patients
     
       //New patient predictions (ignoring observed data)
-      for(np in 1:N_new_patient_predictions) {
-        int template_id = template_patients_for_new_prediction[np];
-        int state = categorical_rng(rep_vector(inv(N_ill_states), N_ill_states));
+      for(np in 1:N_new_predictions) {
+        int state = categorical_rng(rep_vector(inv(N_ill_states), N_ill_states)) + ill_states_shift;
+        row_vector[N_states] log_p_last;
+        log_p_last[ill_states] = rep_row_vector(-log(N_ill_states), N_ill_states);
+        log_p_last[s_healthy] = log(0);
+        if(use_severe_state) {
+          log_p_last[s_severe] = log(0);
+        }
         for(t in 1:N_time) {
-          if(state != s_healthy && state != s_severe) {
-            state = categorical_rng(exp(transition_log_p[X_index[template_id, t],, state - ill_states_shift]));
+          real acc_transition[N_ill_states];
+          matrix[N_states, N_ill_states] transition_log_p = 
+            compute_transition_log_p(
+              N_states, N_ill_states, N_fixed, 
+              X_new_prediction[np, t, ], beta, transition_thresholds, state_intercepts);
+              
+          //Transitions - only allowed from ill states
+          for(s_to in 1:N_states) {
+            for(s_from in ill_states) {
+              acc_transition[s_from - ill_states_shift] = log_p_last[s_from] + transition_log_p[s_to, s_from - ill_states_shift];
+            }
+            if(s_to == s_healthy || (use_severe_state && s_to == s_severe)) {
+              //Add the probability of already being in one of the "terminal" states
+              log_p_new[np, t, s_to] = log_sum_exp(append_array(acc_transition, {log_p_last[s_to]}));
+            } else {
+              log_p_new[np, t, s_to] = log_sum_exp(acc_transition);
+            }
           }
-          new_patient_state_pred[np, t] = state;
+          log_p_last = to_row_vector(log_p_new[np, t, ]);
+
+          if(state != s_healthy && state != s_severe) {
+            state = categorical_rng(exp(transition_log_p[, state - ill_states_shift]));
+          }
+          state_pred_new[np, t] = state;
         }
       }
       

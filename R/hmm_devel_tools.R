@@ -45,11 +45,11 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
     unknown_shift_patients <- sample(1:N_patients, size = N_unknown_shift)
     unknown_shift_ids <- array(0, N_patients)
     unknown_shift_ids[unknown_shift_patients] <- 1:N_unknown_shift
-    unknown_shift_shift <- array(NA_integer_, N_unknown_shift)
+    unknown_shift <- array(NA_integer_, N_unknown_shift)
   } else {
     unknown_shift_patients <- integer(0)
     unknown_shift_ids <- integer(0)
-    unknown_shift_shift <- integer(0)
+    unknown_shift <- integer(0)
   }
   
   N_obs <- N_patients * N_obs_per_patient
@@ -60,9 +60,9 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   treatment_start_times_observed <- integer(N_patients)
   for(p in 1:N_patients) {
     if(p %in% unknown_shift_patients) {
-      first_time <- rdunif(1, a = 1, b = max_observation_shift)
-      unknown_shift_shift[unknown_shift_ids[p]] <- first_time - 1
-      max_time <- min(first_time + 2 * N_obs_per_patient - 1, N_time - max_observation_shift + 1)
+      first_time <- rdunif(1, a = 1, b = max_observation_shift - 1)
+      unknown_shift[unknown_shift_ids[p]] <- first_time - 1
+      max_time <- min(first_time + 2 * N_obs_per_patient - 1, N_time - max_observation_shift)
     } else {
       first_time <- rdunif(1, a = 1, b = N_time -  2 * N_obs_per_patient + 1)
       max_time <- first_time + 2 * N_obs_per_patient - 1
@@ -74,7 +74,7 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
     
     
     if(p %in% unknown_shift_patients) {
-      treatment_start_times_observed[p] = treatment_start_times[p] - unknown_shift_shift[unknown_shift_ids[p]]
+      treatment_start_times_observed[p] = treatment_start_times[p] - unknown_shift[unknown_shift_ids[p]]
     } else {
       treatment_start_times_observed[p] = treatment_start_times[p]
     }
@@ -97,14 +97,19 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   }
 
   X <- array(0, c(N_patients, N_time, N_fixed))
-  X_unknown_shift <- array(0, c(N_unknown_shift, max_observation_shift, N_time, N_fixed))
+  if(N_unknown_shift > 0) {
+    n_shifts <- max_observation_shift + 1
+  } else {
+    n_shifts <- 0
+  }
+  X_unknown_shift <- array(0, c(N_unknown_shift, n_shifts, N_time, N_fixed))
 
   if(time_effect) {
     time_effect_shift <- -1
     for(p in 1:N_patients) {
       if(p %in% unknown_shift_patients) {
-        for(time_shift in 1:max_observation_shift) {
-          X_unknown_shift[unknown_shift_ids[p], time_shift, , N_fixed]  <- 1:N_time + time_effect_shift
+        for(time_shift_id in 1:max_observation_shift) {
+          X_unknown_shift[unknown_shift_ids[p], time_shift_id, , N_fixed]  <- 1:N_time + time_effect_shift
         }
       } else {
         X[p,,N_fixed] <- 1:N_time + time_effect_shift
@@ -123,9 +128,9 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       treatment_per_patient[patients_for_treatment] <- t
       for(p in patients_for_treatment) {
         if(p %in% unknown_shift_patients) {
-          for(time_shift in 1:max_observation_shift) {
-            start_time_shifted <- treatment_start_times_observed[p] + (time_shift - 1)
-            X_unknown_shift[unknown_shift_ids[p], time_shift, (start_time_shifted + 1):N_time, t]  <- 1
+          for(time_shift in 0:max_observation_shift) {
+            start_time_shifted <- treatment_start_times_observed[p] + time_shift
+            X_unknown_shift[unknown_shift_ids[p], time_shift + 1, (start_time_shifted + 1):N_time, t]  <- 1
           }
         } else {
           X[p, (treatment_start_times[p] + 1):N_time, t] <- 1
@@ -206,7 +211,7 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
   viral_load_known = array(NA_integer_, N_obs)
   for(n in 1:N_obs) {
     if(patients[n] %in% unknown_shift_patients) {
-      observation_shift <- unknown_shift_shift[unknown_shift_ids[patients[n]]]
+      observation_shift <- unknown_shift[unknown_shift_ids[patients[n]]]
     } else {
       observation_shift <- 0
     }
@@ -267,7 +272,7 @@ sim_hmm <- function(N_patients, N_patients_unknown_load, N_treatments, N_obs_per
       state_intercepts_high = state_intercepts_high,
       neg_state_intercepts_low = neg_state_intercepts_low,
       observation_sigma = observation_sigma,
-      unknown_shift_shift = unknown_shift_shift,
+      observation_shift_pred = unknown_shift,
       # used only in plot functions
       states_true = states_true
       #observation_model = observation_model
