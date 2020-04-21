@@ -100,5 +100,8 @@ fit_model <- function(hmm_stanmodel, data_wide, model_def) {
 }
 
 fit_all_models <- function(hmm_stanmodel, data_wide) {
-  all_model_defs %>% purrr::map(fit_model, hmm_stanmodel = hmm_stanmodel, data_wide = data_wide)
+  all_model_defs %>% purrr::map(function(model_def) {
+    print(paste0("Fitting ", model_def$name))
+    fit_model(model_def = model_def, hmm_stanmodel = hmm_stanmodel, data_wide = data_wide)
+  })
 }

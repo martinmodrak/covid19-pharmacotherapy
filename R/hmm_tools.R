@@ -438,36 +438,6 @@ plot_fitted_patients_hmm <- function(prepared_data, patient_ids, type = "fitted"
 
 
 plot_fitted_new_patients_hmm <- function(prepared_data, ncol = 2) {
-  
-    
-
-    summarised_fitted <- prepared_data$new_pred_dataset %>%
-      crossing(prepared_data$states_data) %>%
-      group_by(pred_id, label, time, state, low, high) %>%
-      summarise(count = sum(state_pred_new == state)) %>%
-      group_by(pred_id, label, time) %>%
-      mutate(prob = count / sum(count)) %>%
-      ungroup()
-    
-    if(prepared_data$data_for_model$use_severe_state) {
-      severe_approx <- max(prepared_data$states_data$low)
-      severe_geom <- geom_hline(yintercept = severe_approx, color = decoration_color, linetype = "dashed")
-    } else {
-      severe_geom <- NULL
-    }
-
-
-    summarised_fitted %>% 
-      ggplot(aes(xmin = time - 0.5, xmax = time + 0.5, ymin = low, ymax = high, fill = prob)) + 
-      geom_rect() + scale_fill_gradient(low = "white", high = model_color, limits = c(0,1)) +
-      geom_hline(yintercept = 0, color = decoration_color, linetype = "dashed") +
-      severe_geom +
-      facet_wrap(~label, ncol = ncol)
-  
-  
-}
-
-plot_fitted_new_patients_hmm_2 <- function(prepared_data, ncol = 2) {
 
   summarised_fitted <- prepared_data$new_logp_dataset %>%
     inner_join(prepared_data$states_data, by = c("state" = "state")) %>%
@@ -494,4 +464,5 @@ plot_fitted_new_patients_hmm_2 <- function(prepared_data, ncol = 2) {
 }
 
 
-# get_samples_
+# get_samples_severe_risk_hmm <- function(prepared_data, ) {
+# }
